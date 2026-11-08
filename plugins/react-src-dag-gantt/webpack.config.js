@@ -1,15 +1,15 @@
-const path = require('path');
+const path = require("path");
 
 module.exports = {
-  entry: './src/index.js',
+  entry: "./src/index.js",
   output: {
-    path: path.resolve(__dirname, 'dist'),
-    filename: 'dag-gantt-widget.js',
+    path: path.resolve(__dirname, "dist"),
+    filename: "dag-gantt-widget.js",
     library: {
-      name: 'DagGanttWidget',
-      type: 'window',
-      export: 'default'
-    }
+      name: "DagGanttWidget",
+      type: "window",
+      export: "default",
+    },
   },
   module: {
     rules: [
@@ -17,28 +17,28 @@ module.exports = {
         test: /\.(js|jsx)$/,
         exclude: /node_modules/,
         use: {
-          loader: 'babel-loader',
+          loader: "babel-loader",
           options: {
-            presets: ['@babel/preset-env', '@babel/preset-react']
-          }
-        }
-      }
-    ]
+            presets: ["@babel/preset-env", "@babel/preset-react"],
+          },
+        },
+      },
+    ],
   },
   resolve: {
-    extensions: ['.js', '.jsx']
+    extensions: [".js", ".jsx"],
   },
   externals: {
     // Bibliothèques exposées par l'UI Airflow 3.3 sur globalThis
     // (vérifié dans le bundle UI : Reflect.set(globalThis, 'React'|'ReactDOM'|
     // 'ReactJSXRuntime'|'ReactRouterDOM'|'ChakraUI'|'EmotionReact', ...)).
     // Rien n'est bundlé : on consomme celles de l'hôte → thème/branding cohérents.
-    react: 'React',
-    'react-dom': 'ReactDOM',
-    'react/jsx-runtime': 'ReactJSXRuntime',
-    'react/jsx-dev-runtime': 'ReactJSXRuntime',
-    '@chakra-ui/react': 'ChakraUI',
-    '@emotion/react': 'EmotionReact',
-    'react-router-dom': 'ReactRouterDOM'
-  }
+    react: "React",
+    "react-dom": "ReactDOM",
+    "react/jsx-runtime": "ReactJSXRuntime",
+    "react/jsx-dev-runtime": "ReactJSXRuntime",
+    "@chakra-ui/react": "ChakraUI",
+    "@emotion/react": "EmotionReact",
+    "react-router-dom": "ReactRouterDOM",
+  },
 };
