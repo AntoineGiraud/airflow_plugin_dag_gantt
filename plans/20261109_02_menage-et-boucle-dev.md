@@ -25,7 +25,7 @@ et `astro dev start` fonctionne. Deux questions restent ouvertes :
 | D4 | `.env` reste gitignoré + **nouveau** `.env.example` versionné | choix de l'utilisateur : modèle public, valeurs locales |
 | D5 | Ajouter `dev.sh` : écrire **dans le conteneur qui tourne** au lieu de rebuild l'image | le bundle est relu à chaque requête ✅ → le restart était inutile |
 | D6 | **Pas** de dev-server / HMR | dupliquerait un second React dans la page (`externals` + `globalThis`, README §4.3) |
-| D7 | Le prune Docker (env fantôme + images orphelines) est **reporté**, hors périmètre | n'a pas été validé dans le questionnaire ; destructeur |
+| D7 | Prune Docker (env fantôme + images orphelines) : **reporté puis exécuté** sur demande explicite | destructeur → jamais déduit ; détails chiffrés en [§5.1](#5-reste-à-faire-hors-périmètre-de-cette-passe) |
 
 ## 2. Ménage appliqué
 
@@ -80,12 +80,18 @@ l'identique → `./dev.sh full` avant de committer.
 
 ## 5. Reste à faire (hors périmètre de cette passe)
 
-1. **Prune Docker** — l'env `dag-gantt_03e69c-*` (6 conteneurs up) est monté sur
-   `…/airflow/airflow-advent-calendar`, chemin **supprimé** ✅ ; volumes
-   `dag-gantt_03e69c_{postgres_data,airflow_logs}` ; images `advent-calendar_03e69c/airflow`,
-   `dag-gantt_03e69c/airflow`, `dag-gantt-packaged-test:0.1.0` (~3 Go).
-   `docker system df` : **12,28 GB** d'images reclaimables, **8,9 GB** de build cache.
-   ⚠️ Ne pas utiliser `astro dev kill -a` : il emporterait `gantt-consumer_*` (projet voisin).
+1. ~~**Prune Docker**~~ — **fait juste après les commits**, sur demande explicite :
+   les 6 conteneurs `dag-gantt_03e69c-*` (dont 5 up, montés sur un chemin supprimé), les
+   volumes `dag-gantt_03e69c_{postgres_data,airflow_logs}`, les 3 images orphelines,
+   13 images dangling (`docker image prune`) et le cache de build > 48 h.
+   **~2 Go réellement libérés** (320 → 318 Go utilisés) : les « 12,29 GB reclaimables »
+   annoncés par `docker system df` étaient pour l'essentiel des **couches partagées** avec
+   l'image runtime — la taille affichée d'une image Astro est virtuelle, pas exclusive
+   (`docker image prune -f` a supprimé 13 images de 1,06 Go pour **0 o** de disque gagné).
+   Gardé volontairement : le cache de build **< 48 h** (2,3 Go) pour que `./dev.sh full` et
+   l'env voisin `gantt-consumer_*` restent rapides, et les volumes/conteneurs stoppés des
+   autres projets (45 Mo + 1 Mo) — des données, pas du cache.
+   ⚠️ `astro dev kill -a` reste interdit ici : il emporte `gantt-consumer_*`.
 2. **CI** : `dist/` et le bundle sont gitignorés → un pipeline doit enchaîner `./build.sh` puis le
    build d'image ; aucun `.gitlab-ci.yml` n'existe encore.
 3. Le `.env` (nom d'instance + thème oklch) ne peut pas entrer dans une image (`.dockerignore`) :
