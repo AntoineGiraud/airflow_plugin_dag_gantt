@@ -143,10 +143,10 @@ pour tester la borne basse airflow 3.1 × py3.12, publication PyPI **sous un aut
 Local, avant tag :
 
 - [x] `ruff check . && ruff format --check .` → vert (aujourd'hui `format --check` rouge sur `hatch_build.py`).
-- [ ] `./build.sh` → **une seule** wheel `airflow_dag_gantt-0.2.0-py3-none-any.whl` dans `dist/` ; `unzip -p dist/*.whl '*METADATA' | grep -E 'Requires-Python|Classifier|License'` → `>=3.12` + classifiers 3.12/3.13/3.14 + `License-Expression: MIT` ; `unzip -l dist/*.whl | grep -i license` → `LICENSE` présent **et** le `dag-gantt-widget.js.LICENSE.txt` du bundle toujours là (le premier est la licence du paquet, le second les licences des paquets JS — ne pas les confondre).
-- [ ] `uv venv /tmp/v314 && uv pip install -p /tmp/v314 dist/*.whl pytest httpx && /tmp/v314/bin/pytest -q tests` → **0 skip** sur `test_api_runs_contract` (prouve que `httpx` est bien dans l'extra).
-- [ ] `uv pip compile pyproject.toml --python-version 3.12 -q -o /dev/null` (puis 3.13, 3.14) → résout sur les 3.
-- [ ] Runtime inchangé : `./dev.sh full` puis `./dev.sh api` → `dag-gantt 0.2.0 loaded …` dans `./dev.sh logs`.
+- [x] `./build.sh` → **une seule** wheel `airflow_dag_gantt-0.2.0-py3-none-any.whl` dans `dist/` ; `unzip -p dist/*.whl '*METADATA' | grep -E 'Requires-Python|Classifier|License'` → `>=3.12` + classifiers 3.12/3.13/3.14 + `License-Expression: MIT` ; `unzip -l dist/*.whl | grep -i license` → `LICENSE` présent **et** le `dag-gantt-widget.js.LICENSE.txt` du bundle toujours là (le premier est la licence du paquet, le second les licences des paquets JS — ne pas les confondre).
+- [x] `uv venv /tmp/v314 && uv pip install -p /tmp/v314 dist/*.whl pytest httpx && /tmp/v314/bin/pytest -q tests` → **0 skip** sur `test_api_runs_contract` (prouve que `httpx` est bien dans l'extra).
+- [x] `uv pip compile pyproject.toml --python-version 3.12 -q -o /dev/null` (puis 3.13, 3.14) → résout sur les 3.
+- [x] Runtime inchangé : `./dev.sh full` puis `./dev.sh api` → `dag-gantt 0.2.0 loaded …` dans `./dev.sh logs`.
 
 Après le premier tag (push fait par toi) :
 
@@ -154,7 +154,7 @@ Après le premier tag (push fait par toi) :
 - [ ] TestPyPI : `pip install --no-deps --index-url https://test.pypi.org/simple/ airflow-dag-gantt==0.2.0` (avec `--index-url`, **jamais** `--extra-index-url`).
 - [ ] Chaîne consommateur, la vraie : `docker build -f deploy/Dockerfile.from-release --build-arg DAG_GANTT_URL=<asset> --build-arg DAG_GANTT_SHA256=<sha du run> .` → doit afficher `entry point ok: ['dag_gantt', …]`.
 - [ ] Contrôle négatif (**la preuve que le hash sert à quelque chose**) : relancer le même build avec un sha256 faux → pip doit échouer sur `THESE PACKAGES DO NOT MATCH THE HASHES` (comportement déjà vérifié localement).
-- [ ] Régression du mode local : `./dev.sh full` (défaut `COPY dist/`) toujours vert, hors-ligne.
+- [x] Régression du mode local : `./dev.sh full` (défaut `COPY dist/`) toujours vert, hors-ligne.
 
 ## Note de révision (retour n°2) — le périmètre a été réduit à un POC
 
