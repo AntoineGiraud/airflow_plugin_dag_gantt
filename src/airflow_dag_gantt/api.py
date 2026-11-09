@@ -1,7 +1,6 @@
-"""Dag Gantt plugin — vue Gantt macro de tous les DagRun d'une journée.
+"""Partie HTTP du plugin Global Dag Gantt : app FastAPI + requêtes SQLAlchemy.
 
-Inspiré de la tuyauterie du plugin advent-calendar (fastapi_apps + react_apps),
-mais expose les runs de tous les DAGs via une API JSON lue par le bundle React.
+Importé par `plugin.py` (et testable sans plugin : `TestClient(app)`).
 """
 
 from __future__ import annotations
@@ -11,19 +10,21 @@ from pathlib import Path
 from typing import Any
 
 from airflow.models import DagModel, DagRun, DagTag
-from airflow.plugins_manager import AirflowPlugin
 from airflow.utils.session import create_session
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 
-PLUGIN_DIR = Path(__file__).parent.absolute()
-BUNDLE_PATH = PLUGIN_DIR / "react-src-dag-gantt" / "dist" / "dag-gantt-widget.js"
+from . import BUNDLE_NAME, URL_PREFIX, __version__
+
+#: Bundle embarqué **dans le paquet** (copié par hatch_build.py), plus un fichier
+#: qui traîne à côté de `plugins/dag_gantt_plugin.py`.
+BUNDLE_PATH = Path(__file__).parent / "static" / BUNDLE_NAME
 
 # Garde-fou : nombre max de runs renvoyés pour une journée.
 RUN_LIMIT = 2000
 
-app = FastAPI(title="Dag Gantt Plugin", version="1.0.0")
+app = FastAPI(title="Dag Gantt Plugin", version=__version__)
 
 
 def _day_window(date_str: str | None) -> tuple[datetime, datetime]:
@@ -57,23 +58,20 @@ def get_runs(
     started_at = func.coalesce(DagRun.start_date, DagRun.run_after)
 
     with create_session() as session:
-        rows = (
-            session.execute(
-                select(
-                    DagRun.dag_id,
-                    DagRun.run_id,
-                    DagRun.state,
-                    DagRun.start_date,
-                    DagRun.end_date,
-                    DagRun.logical_date,
-                )
-                .join(DagModel, DagModel.dag_id == DagRun.dag_id)
-                .where(started_at >= day_start, started_at < day_end)
-                .order_by(started_at)
-                .limit(RUN_LIMIT + 1)
+        rows = session.execute(
+            select(
+                DagRun.dag_id,
+                DagRun.run_id,
+                DagRun.state,
+                DagRun.start_date,
+                DagRun.end_date,
+                DagRun.logical_date,
             )
-            .all()
-        )
+            .join(DagModel, DagModel.dag_id == DagRun.dag_id)
+            .where(started_at >= day_start, started_at < day_end)
+            .order_by(started_at)
+            .limit(RUN_LIMIT + 1)
+        ).all()
         truncated = len(rows) > RUN_LIMIT
         rows = rows[:RUN_LIMIT]
 
@@ -107,17 +105,17 @@ def get_runs(
     }
 
 
-@app.get("/dag-gantt-widget.js")
+@app.get(f"/{BUNDLE_NAME}")
 def serve_react_component():
     if not BUNDLE_PATH.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Bundle not built yet: {BUNDLE_PATH} (run `bun run build`)",
+            detail=f"Bundle not built yet: {BUNDLE_PATH} (run ./build.sh)",
         )
     return FileResponse(
         path=str(BUNDLE_PATH),
         media_type="application/javascript",
-        filename="dag-gantt-widget.js",
+        filename=BUNDLE_NAME,
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
@@ -131,29 +129,7 @@ def root():
     return {
         "message": "📊 Dag Gantt Plugin",
         "type": "react_app",
-        "component_url": "/dag-gantt-plugin/dag-gantt-widget.js",
-        "api": "/dag-gantt-plugin/api/runs?date=YYYY-MM-DD",
+        "component_url": f"{URL_PREFIX}/{BUNDLE_NAME}",
+        "api": f"{URL_PREFIX}/api/runs?date=YYYY-MM-DD",
         "description": "Global Gantt of every DagRun of a day, filterable by name/tag/state",
     }
-
-
-class DagGanttPlugin(AirflowPlugin):
-    name = "dag_gantt_plugin"
-
-    fastapi_apps = [
-        {
-            "app": app,
-            "url_prefix": "/dag-gantt-plugin",
-            "name": "Dag Gantt Plugin",
-        }
-    ]
-
-    react_apps = [
-        {
-            "name": "Dag Gantt",
-            "bundle_url": "/dag-gantt-plugin/dag-gantt-widget.js",
-            "destination": "nav",
-            "category": "browse",
-            "url_route": "dag-gantt",
-        }
-    ]

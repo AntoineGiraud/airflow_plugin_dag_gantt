@@ -3,6 +3,8 @@
 .DS_Store
 airflow_settings.yaml
 __pycache__/
+.pytest_cache/
+.ruff_cache/
 astro
 .venv
 airflow-webserver.pid
@@ -10,5 +12,8 @@ webserver_config.py
 airflow.cfg
 airflow.db
 
-plugins/*/node_modules/*
-# plugins/*/dist/*
+# Paquet airflow-dag-gantt : les artefacts de build ne se committent jamais.
+dist/
+js/node_modules/
+js/dist/
+src/airflow_dag_gantt/static/

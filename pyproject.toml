@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "airflow-dag-gantt"
+version = "0.1.0"
+description = "Global Dag Gantt — vue macro de tous les DagRun d'une journée (Airflow 3.1+)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Antoine Giraud" }]
+keywords = ["airflow", "plugin", "gantt", "dag", "observability"]
+classifiers = [
+    "Framework :: Apache Airflow",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+# Ne PAS épingler 3.3 : react_apps/fastapi_apps existent depuis Airflow 3.1.
+dependencies = ["apache-airflow>=3.1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+# Découverte automatique par Airflow : pas de fichier dans $PLUGINS_FOLDER.
+[project.entry-points."airflow.plugins"]
+dag_gantt = "airflow_dag_gantt.plugin:DagGanttPlugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/airflow_dag_gantt"]
+# static/ est gitignoré (généré par `bun run build`) → sans cette ligne il est exclu du wheel.
+artifacts = ["/src/airflow_dag_gantt/static/*"]
+
+[tool.hatch.build.targets.sdist]
+# '/' ancre les patterns à la racine (sinon 'src' attrape aussi plugins/*/src).
+include = ["/src", "/js", "/hatch_build.py", "/pyproject.toml", "/README.md"]
+# Exclus même hors dépôt git (les patterns .gitignore ne s'appliquent alors pas).
+exclude = ["/js/node_modules", "/js/dist", "/src/airflow_dag_gantt/static", "/dist"]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+# Squelette généré par `astro dev init` : pas notre style, pas notre lint.
+extend-exclude = ["tests/dags"]
+
+[tool.ruff.lint]
+# Règles utiles sans être punitives ; DTZ/BLE/RUF012 sont volontairement hors
+# périmètre (le contrat Airflow impose des listes mutables en attributs de classe).
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["airflow_dag_gantt"]

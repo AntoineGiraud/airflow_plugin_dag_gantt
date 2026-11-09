@@ -1,1 +1,7 @@
 # Astro Runtime includes the following pre-installed providers packages: https://www.astronomer.io/docs/astro/runtime-image-architecture#provider-packages
+#
+# ⚠️ Le plugin Global Dag Gantt n'a rien à faire ici : c'est un paquet pip.
+# Il est installé par le Dockerfile (COPY dist/ + pip install de la wheel produite
+# par ./build.sh). Mettre la wheel dans requirements.txt ÉCHOUE au build Astro :
+# l'étape ONBUILD `install-python-dependencies` ne reçoit que requirements.txt,
+# le `COPY . .` du projet arrive après. Voir README §7.4.
