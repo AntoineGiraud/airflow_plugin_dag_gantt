@@ -82,7 +82,7 @@ Airflow local dans **Docker Compose** : un dossier de projet (`dags/`, `plugins/
 | `astro dev run dags list`             | exécute une commande `airflow` **dans** le conteneur — ici : lister les DAGs                                                 |
 | `astro dev run dags unpause <dag_id>` | réactive un DAG (les nouveaux DAGs naissent en pause)                                                                        |
 | `astro dev run dags trigger <dag_id>` | déclenche un run — parfait pour alimenter le Gantt                                                                           |
-| `astro dev pytest`                    | lance les tests d'intégrité des DAGs (`tests/dags/`)                                                                         |
+| `astro dev pytest`                    | tests d'intégrité des DAGs (le harnais `.astro/test_dag_integrity_default.py`) — ce dépôt lui préfère `pytest -q tests`   |
 
 💡 Astuce : un **nouveau fichier de DAG** peut mettre du temps à être découvert
 (`dag_discovery_safe_mode`) ; un `docker restart <projet>-dag-processor-1` force la
@@ -123,15 +123,18 @@ externals: {
 **bun** remplace npm/yarn ici : c'est un gestionnaire de paquets + exécuteur de scripts
 **beaucoup plus rapide**, 100 % compatible avec l'écosystème npm
 (`bun install` ↔ `npm install`, `bun run build` ↔ `npm run build`). Le `bun.lock` du
-repo fige les versions. Cycle de développement :
+repo fige les versions.
 
 ```bash
 cd js
 bun install      # une fois (installe webpack/babel — uniquement pour le build)
 bun run build    # compile js/dist/dag-gantt-widget.js
-# puis, pour le rendre visible d'Airflow :
-DAG_GANTT_JS_DIR=js/dist uv build --wheel && astro dev restart
+bun run dev      # idem, en --watch et non minifié
 ```
+
+> ⚠️ Ce qui précède est le cycle de **livraison** (`bun run build` → wheel → image). Pour
+> **travailler**, surtout ne pas repayer ce cycle : `./dev.sh watch` pousse le bundle dans le
+> conteneur qui tourne en ~1,2 s, sans restart ni wheel ([§5.1](#51-contribuer-au-plugin--la-boucle-de-feedback-mesurée)).
 
 ### 4.3 Le mécanisme « externals + globalThis »
 
@@ -156,6 +159,7 @@ personnalisé. Un faux plugin de 10 lignes suffirait :
 
 ```bash
 # 1. Prérequis : Astro CLI (≥ 1.34) + Docker, et bun pour rebuilder le frontend (optionnel)
+cp .env.example .env                 # config locale (nom d'instance + thème UI) : .env n'est pas versionné
 ./build.sh                           # bun + uv → dist/airflow_dag_gantt-0.1.0-py3-none-any.whl
 astro dev start                      # l'image du projet installe la wheel (voir Dockerfile)
 
@@ -167,21 +171,71 @@ astro dev run dags trigger gantt_demo_slow   # ~3 min : barre « running » qui 
 # 3. Parcourir → Dag Gantt 🎉
 ```
 
-Après une modification du plugin : `./build.sh` puis `astro dev restart` (la wheel est
-réinstallée dans l'image). C'est tout : **il n'y a plus de dossier `plugins/`** dans ce dépôt,
-le plugin vient du paquet ([§7](#7-distribuer-le-plugin-comme-paquet-pip-uv--pip)).
+C'est tout : **il n'y a plus de dossier `plugins/`** (ni `include/`) dans ce dépôt, le plugin
+vient du paquet ([§7](#7-distribuer-le-plugin-comme-paquet-pip-uv--pip)) — donc pas de
+« modifier le fichier et redémarrer » : la boucle de contribution se joue en [§5.1](#51-contribuer-au-plugin--la-boucle-de-feedback-mesurée).
 
-> ⚠️ Deux particularités locales vérifiées : `astro dev pytest` est cassé par le `.env` de ce
-> poste (thème JSON multiligne refusé par `docker --env-file`) → lancer les tests via
-> `docker run` sur l'image du projet ; et un **nouveau** fichier de DAG n'est pas détecté à
+### 5.1 Contribuer au plugin : la boucle de feedback (mesurée)
+
+Deux moitiés, deux lois physiques différentes — c'est ça qui structure le `dev` (les délais
+ci-dessous sont mesurés sur ce poste, à valider chez vous) :
+
+| Ce que vous changez | Ce qui doit recharger | Délai mesuré |
+| --- | --- | --- |
+| **JS/JSX** (`js/src/`) | rien du côté Airflow : `api.py` sert le bundle par `FileResponse`, **relu à chaque requête** (+ `cache-control: no-cache, no-store`) → l'`astro dev restart` est inutile | **1,2 s** (`./dev.sh js`) + refresh navigateur |
+| **Python** (`api.py`, `plugin.py`) | le **processus** Airflow : Airflow ne charge les plugins (entry points) qu'au démarrage | **8,5 s** (`./dev.sh py`) |
+| **Packaging / `Dockerfile` / `pyproject.toml`** | l'image entière | **~20 s** (`./dev.sh full`) |
+
+Autrement dit : le composant React n'a **pas** de HMR, et ce n'est pas un accident —
+`react_apps[].bundle_url` est monté par l'UI Airflow qui recharge le widget de zéro à chaque
+navigation. Un refresh à 1,2 s vaut largement un Fast Refresh, et ça évite le piège du
+dev-server : `react`/`react-dom`/`@chakra-ui/react`/`@emotion/react` sont en
+[`externals`](js/webpack.config.js) et viennent du `globalThis` de l'hôte
+([§4.3](#43-le-mécanisme--externals--globalthis)). Servir le bundle depuis un
+webpack-dev-server du poste dupliquerait une **seconde** instance de React dans la page —
+exactement le crash de hooks/thème qu'on a évité en son temps. À ré-ouvrir seulement si la
+boucle de 1,2 s devient le goulot (le vrai chantier est alors CORS + globals partagés).
+
+Le seul vrai goulot est donc le redémarrage du processus pour la partie Python : 5-8 s,
+pas 2 minutes — et uniquement quand on touche aux **métadonnées** du plugin
+(`react_apps`, `url_prefix`, routes FastAPI).
+
+### 5.2 `dev.sh` : la boucle courte, sans reconstruire l'image
+
+```bash
+./dev.sh watch             # terminal 1 : webpack --watch + copie auto à chaque compile
+./dev.sh js                # ou à la main : bundle (1,2 s) → Ctrl+Shift+R
+./dev.sh py                # .py → site-packages + restart api-server (8,5 s) ; --all = 4 processus
+./dev.sh full              # ./build.sh + astro dev restart (~20 s) ← LA VÉRITÉ, avant de committer
+./dev.sh url               # URL directe de l'api-server (le port est réattribué à chaque restart)
+./dev.sh api 2026-11-09    # le contrat JSON sans ouvrir le navigateur
+./dev.sh logs              # journal de l'api-server
+```
+
+`dev.sh` retrouve **lui-même** le bon conteneur (celui dont le `dags/` monté est celui de ce
+dépôt) — utile quand plusieurs environnements `astro dev` tournent en parallèle.
+
+> ⚠️ `js`, `watch` et `py` écrivent **dans le conteneur** : c'est jetable. `astro dev
+> restart`/`kill` ou un rebuild d'image remettent le paquet de la wheel à l'identique. Deux
+> conséquences : (1) un bug vu seulement en loop courte peut disparaître tout seul au restart
+> — valider par `./dev.sh full` avant de committer ; (2) le bundle en loop courte est celui
+> de `webpack --mode development` (non minifié, stack traces lisibles) — le `LICENSE.txt` et
+> l'empreinte du bundle de prod ne sont comparables qu'après `./build.sh`.
+
+> ⚠️ Deux particularités locales vérifiées : `astro dev pytest` est cassé par le thème JSON
+> multiligne de `.env` (refusé par `docker run --env-file`) → lancer `pytest -q tests` avec
+> `docker exec`/`docker run` sur l'image du projet (voir l'en-tête de
+> `tests/test_plugin_packaging.py`) ; et un **nouveau** fichier de DAG n'est pas détecté à
 > chaud → `docker restart <projet>-dag-processor-1`.
 
 ## 6. Structure du dépôt
 
 ```text
 pyproject.toml                    métadonnées du paquet + entry point airflow.plugins
+.env.example                      modèle de config locale → `cp .env.example .env` (`.env` est gitignoré)
 hatch_build.py                    hook : câble js/dist → src/airflow_dag_gantt/static
 build.sh                          bun run build + uv build --wheel → dist/*.whl
+dev.sh                            boucle de dev courte : pousser dans le conteneur qui tourne (§5.2)
 Dockerfile                        runtime Astro + pip install de la wheel (valide l'entry point)
 src/airflow_dag_gantt/
   plugin.py                       DagGanttPlugin(AirflowPlugin)  ← cible de l'entry point
@@ -193,7 +247,9 @@ tests/test_plugin_packaging.py    entry point, URLs, bundle, contrat d'API
 docs/                             capture d'écran
 plans/                            plans d'architecture des features
 
-(plus de plugins/ : c'était précisément le but du §7)
+(plus de plugins/ ni d'include/ : le plugin est un paquet — le but du §7 — et ce dépôt
+n'a rien à injecter dans le `PYTHONPATH` du runtime ; `astro dev` ne monte plus que
+`dags/` et `tests/`)
 ```
 
 ## 7. Distribuer le plugin comme paquet pip (`uv` / `pip`)
@@ -287,6 +343,7 @@ dans `.dockerignore`.
 | listé, mais page vide / bundle 404 | `static/` absent du wheel, ou `BUNDLE_PATH` mal pointé | `python -c "import airflow_dag_gantt as p,pathlib;print(list((pathlib.Path(p.__file__).parent/'static').iterdir()))"` |
 | entrée de menu absente | `lazy_load_plugins=True` **ou** `react_apps[0].name` ≠ clé `globalThis` (`'Dag Gantt'`) | `airflow config get-value core lazy_load_plugins`, console du bundle |
 | le plugin du dossier `plugins/` gagne | **premier nom gagné** : un `plugins/dag_gantt_plugin.py` résiduel éclipse le paquet | `airflow plugins --verbose` montre la source gagnante ; supprimer le résidu |
+| un correctif « marche en local puis disparaît » | les copies de `./dev.sh js`/`py` sont **dans le conteneur** : `astro dev restart`/`kill` ou un rebuild remettent la wheel d'origine | `./dev.sh full` (ou `./build.sh && astro dev restart`) puis re-tester ; `pip show -f airflow-dag-gantt` |
 
 > **Note d'ops (contournement, non retenu)** : sur un Helm Chart, `extraVolumes` /
 > `extraVolumeMounts` pour monter `plugins/` sur l'`api-server` débloque la situation sans
@@ -300,6 +357,12 @@ sous-projet `src/<paquet>/`, un dossier React, un entry point et un `build.sh`. 
 celui-ci : durcir l'API (`GetUserDep`), fenêtre glissante multi-jours, surcouche « criticité »
 par tag, panneaux `dashboard`, publication sur un registre interne (Nexus/Artifactory) et
 validation sur le Helm Chart officiel `apache/airflow` (voir `plans/`).
+
+Côté outillage : le `./dev.sh watch` à ~1,2 s couvre aujourd'hui tout le confort utile. Si un
+jour le frontend grossit au point de réclamer un vrai HMR, la piste n'est **pas** un
+dev-server qui sert le bundle (deux React dans la page, cf. [§5.1](#51-contribuer-au-plugin--la-boucle-de-feedback-mesurée))
+mais un `bundle_url` pointant vers une URL du poste avec les `externals` servis par une page
+hôte qui singe l'UI Airflow — à creuser avec des chiffres, pas par goût du tooling.
 
 ---
 
