@@ -4,4 +4,4 @@
 # Il est installé par le Dockerfile (COPY dist/ + pip install de la wheel produite
 # par ./build.sh). Mettre la wheel dans requirements.txt ÉCHOUE au build Astro :
 # l'étape ONBUILD `install-python-dependencies` ne reçoit que requirements.txt,
-# le `COPY . .` du projet arrive après. Voir README §7.4.
+# le `COPY . .` du projet arrive après. Voir README §4.3.
