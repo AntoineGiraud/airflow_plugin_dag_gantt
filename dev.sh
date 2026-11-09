@@ -14,6 +14,9 @@
 # ⚠️ `js`/`py` écrivent dans le conteneur : c'est **jetable**. `astro dev restart|kill`,
 #    un rebuild d'image ou un `docker cp` concurrent écrasent tout ; le paquet installé
 #    vient de la wheel. Valider pour de vrai avec `./dev.sh full` avant de committer.
+#    Cas vérifié : un `dev.sh js` donné APRÈS le dernier `./build.sh` voit son correctif
+#    ressusciter en vieux bundle au restart suivant (l'image ré-installe la wheel d'avant)
+#    — après la dernière modif JS, le dernier mot est à `./build.sh`.
 #
 # Pourquoi ça marche sans restart côté JS : `api.py` sert le bundle par `FileResponse`
 # (lecture à chaque requête, `cache-control: no-cache`) — le fichier change, le navigateur
@@ -42,7 +45,7 @@ api_container() {
 
 CMD=${1:-js}
 if [ "$CMD" = "help" ] || [ "$CMD" = "-h" ] || [ "$CMD" = "--help" ]; then
-  sed -n '2,21p' "$0"
+  sed -n '2,24p' "$0"
   exit 0
 fi
 
@@ -129,7 +132,7 @@ case "$CMD" in
     shift; docker logs -f --tail 100 "$C" "$@"
     ;;
   -h|--help|help)
-    sed -n '2,21p' "$0"
+    sed -n '2,24p' "$0"
     ;;
   *)
     die "commande inconnue: $CMD (voir ./dev.sh help)"

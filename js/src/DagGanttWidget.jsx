@@ -5,7 +5,7 @@
  * (voir webpack externals) : React, ChakraUI, ReactRouterDOM.
  * Rien n'est bundle : theme et branding de l'hote automatiquement appliqués.
  */
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import * as Chakra from '@chakra-ui/react';
 import * as Router from 'react-router-dom';
 
@@ -36,6 +36,12 @@ const BAR_GAP = 4;
 const MAX_LANES = 6;
 const REFRESH_MS = 30000; // rafraichissement leger (barres running + donnees)
 
+const DAY_MS = 24 * 3600 * 1000;
+const MIN_SPAN_MS = 3 * 3600 * 1000; // largeur mini de la fenetre en zoom auto : 3 h
+const MARGIN_RATIO = 0.05; // ~5 % d'air de chaque cote
+const TICK_STEPS_MIN = [5, 10, 15, 30, 60, 120, 240]; // paliers de graduation
+const MAX_TICKS = 12;
+
 const todayLocal = () => {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
@@ -54,11 +60,61 @@ const fmtDuration = (ms) => {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
 };
 
+const fmtClock = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+// Plus petit palier tel qu'on garde <= MAX_TICKS graduations sur le span donne.
+const pickStepMs = (spanMs) => {
+  const step = TICK_STEPS_MIN.find((m) => spanMs / (m * 60000) <= MAX_TICKS);
+  return (step || TICK_STEPS_MIN[TICK_STEPS_MIN.length - 1]) * 60000;
+};
+
+/* Fenetre affichee : journee complete [00:00, 24:00), ou zoom sur les runs filtres
+   (1er start -> derniere fin, MIN_SPAN_MS minimum, bornes arrondies sur le palier
+   de graduation et clampées dans la journee). */
+const computeWindow = (runs, dayStart, zoom, nowMs) => {
+  const dayEnd = dayStart + DAY_MS;
+  const full = { windowStart: dayStart, windowSpan: DAY_MS, zoomed: false };
+  if (!zoom || runs.length === 0) return full;
+
+  let t0 = Infinity;
+  let t1 = -Infinity;
+  runs.forEach((r) => {
+    const s = Date.parse(r.start);
+    if (Number.isNaN(s)) return; // run sans start exploitable : ignore
+    const e = r.end ? Date.parse(r.end) : nowMs; // running / queued -> etire jusqu'a maintenant
+    t0 = Math.min(t0, s);
+    t1 = Math.max(t1, Number.isNaN(e) ? s : e);
+  });
+  if (!Number.isFinite(t0)) return full; // aucun run avec un start valide
+
+  const margin = Math.max((t1 - t0) * MARGIN_RATIO, 60000); // au moins 1 min d'air
+  t0 -= margin;
+  t1 += margin;
+  if (t1 - t0 < MIN_SPAN_MS) {
+    const mid = (t0 + t1) / 2; // run isolé / journee tres chargee -> 3 h centrees
+    t0 = mid - MIN_SPAN_MS / 2;
+    t1 = mid + MIN_SPAN_MS / 2;
+  }
+  if (t1 - t0 >= DAY_MS) return full;
+
+  // Arrondi sur le palier de graduation, aligne sur minuit local (pas sur l'epoch :
+  // les decalages de fuseau ne sont pas tous ronds).
+  const stepMs = pickStepMs(t1 - t0);
+  const align = (t, dir) => dayStart + dir((t - dayStart) / stepMs) * stepMs;
+  t0 = align(t0, Math.floor);
+  t1 = align(t1, Math.ceil);
+  // Clamp dans la journee : si un bord depasse, on glisse la fenetre de l'autre cote.
+  const span = Math.min(t1 - t0, DAY_MS);
+  t0 = Math.min(Math.max(t0, dayStart), dayEnd - span);
+  t1 = t0 + span;
+  return { windowStart: t0, windowSpan: t1 - t0, zoomed: true };
+};
+
 /* ------------------------------------------------------------------ */
 /* Barre d'un run                                                      */
 /* ------------------------------------------------------------------ */
 
-const GanttBar = ({ run, windowStart, windowSpan, now }) => {
+const GanttBar = ({ run, windowStart, windowSpan, now, chartWidth }) => {
   const startMs = Date.parse(run.start);
   const endMs = run.end ? Date.parse(run.end) : now; // running / queued -> etire jusqu'a maintenant
   const left = Math.max(0, ((startMs - windowStart) / windowSpan) * 100);
@@ -66,6 +122,10 @@ const GanttBar = ({ run, windowStart, windowSpan, now }) => {
   const width = Math.max(right - left, 0.35);
   const color = STATE_COLORS[run.state] || DEFAULT_COLOR;
   const duration = endMs - startMs;
+  // Label duree dans la barre si elle est assez large (~55 px) ; sans mesure
+  // (ResizeObserver absent), seuil approximatif en % de la largeur totale.
+  const widthPx = chartWidth ? (width / 100) * chartWidth : null;
+  const showDuration = widthPx != null ? widthPx >= 55 : width >= 8;
 
   const gridUrl = `/dags/${encodeURIComponent(run.dag_id)}/runs/${encodeURIComponent(run.run_id)}`;
 
@@ -96,6 +156,7 @@ const GanttBar = ({ run, windowStart, windowSpan, now }) => {
       borderColor="running.solid"
     >
       {run.state === 'running' ? '▶' : ''}
+      {showDuration ? `${run.state === 'running' ? ' ' : ''}${fmtDuration(duration)}` : ''}
     </Box>
   );
 
@@ -123,7 +184,7 @@ const GanttBar = ({ run, windowStart, windowSpan, now }) => {
 /* Ligne d'un DAG (lane packing simple)                                */
 /* ------------------------------------------------------------------ */
 
-const DagRow = ({ dagId, runs, tags, windowStart, windowSpan, now }) => {
+const DagRow = ({ dagId, runs, tags, windowStart, windowSpan, now, chartWidth }) => {
   // lanes gredy : chaque run dans la premiere lane libre
   const laneEnds = [];
   runs.forEach((run) => {
@@ -166,6 +227,7 @@ const DagRow = ({ dagId, runs, tags, windowStart, windowSpan, now }) => {
             windowStart={windowStart}
             windowSpan={windowSpan}
             now={now}
+            chartWidth={chartWidth}
           />
         ))}
       </Box>
@@ -178,38 +240,120 @@ const DagRow = ({ dagId, runs, tags, windowStart, windowSpan, now }) => {
 /* ------------------------------------------------------------------ */
 
 const Select = ({ value, onChange, options, placeholder }) => {
+  // options : chaines ou {value, label} ; placeholder absent = pas d'option vide.
+  const norm = options.map((o) => (typeof o === 'string' ? { value: o, label: o } : o));
+  const field = norm.map((o) => (
+    <option key={o.value} value={o.value}>{o.label}</option>
+  ));
   if (!HasNativeSelect) {
     return (
       <select value={value} onChange={(e) => onChange(e.target.value)} style={{ height: '32px' }}>
-        <option value="">{placeholder}</option>
-        {options.map((o) => (
-          <option key={o} value={o}>{o}</option>
-        ))}
+        {placeholder && <option value="">{placeholder}</option>}
+        {field}
       </select>
     );
   }
   return (
     <Chakra.NativeSelectRoot size="sm" width="auto" minW="120px">
       <Chakra.NativeSelectField placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)}>
-        {options.map((o) => (
-          <option key={o} value={o}>{o}</option>
-        ))}
+        {field}
       </Chakra.NativeSelectField>
     </Chakra.NativeSelectRoot>
   );
 };
 
+// Tri des rangees de DAGs (valeurs partagees avec l'URL, cf. step URL sync)
+const SORT_OPTIONS = [
+  { value: 'first', label: 'Tri : 1er run' },
+  { value: 'last', label: 'Tri : Dernier run' },
+  { value: 'name', label: 'Tri : Nom DAG' },
+  { value: 'count', label: 'Tri : Nb de runs' },
+  { value: 'duration', label: 'Tri : Durée max' },
+];
+const DEFAULT_SORT = 'first';
+
+/* --------- Etat des filtres dans l'URL (partageable, pas d'historique) --------- */
+
+const HasSearchParams = Boolean(Router && typeof Router.useSearchParams === 'function');
+const URL_KEYS = ['date', 'q', 'tag', 'state', 'sort', 'zoom'];
+
+const readInitialQuery = () => {
+  try {
+    return new URLSearchParams(window.location.search);
+  } catch (err) {
+    return new URLSearchParams();
+  }
+};
+
+// Ecrit les parametres non par defaut dans la query string (replaceState /
+// setSearchParams replace = pas de spam dans l'historique). Les parametres
+// etrangers a la vue sont conserves.
+const useUrlSync = (query) => {
+  const nextSearch = URL_KEYS.filter((k) => query[k]).map((k) => `${k}=${encodeURIComponent(query[k])}`).join('&');
+  if (HasSearchParams) {
+    const [sp, setSp] = Router.useSearchParams();
+    useEffect(() => {
+      const merged = new URLSearchParams();
+      sp.forEach((v, k) => {
+        if (!URL_KEYS.includes(k)) merged.set(k, v);
+      });
+      URL_KEYS.forEach((k) => {
+        if (query[k]) merged.set(k, query[k]);
+      });
+      if (merged.toString() !== sp.toString()) setSp(merged, { replace: true });
+    }, [nextSearch, sp, setSp]); // eslint-disable-line react-hooks/exhaustive-deps
+    return;
+  }
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href);
+      URL_KEYS.forEach((k) => url.searchParams.delete(k));
+      URL_KEYS.forEach((k) => {
+        if (query[k]) url.searchParams.set(k, query[k]);
+      });
+      if (url.search !== window.location.search) {
+        window.history.replaceState(window.history.state, '', url);
+      }
+    } catch (err) {
+      /* hors navigateur / URL invalide : on ignore */
+    }
+  }, [nextSearch]); // eslint-disable-line react-hooks/exhaustive-deps
+};
+
 const DagGanttWidget = () => {
-  const [date, setDate] = useState(todayLocal());
+  // Hydratation depuis l'URL au montage (les valeurs par defaut ne sont pas reecrites).
+  const [initialQuery] = useState(readInitialQuery);
+  const hydratedSort = initialQuery.get('sort');
+
+  const [date, setDate] = useState(initialQuery.get('date') || todayLocal());
   const [data, setData] = useState({ runs: [], truncated: false, count: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [now, setNow] = useState(Date.now());
 
   // Filtres client-side
-  const [nameFilter, setNameFilter] = useState('');
-  const [tagFilter, setTagFilter] = useState('');
-  const [stateFilter, setStateFilter] = useState('');
+  const [nameFilter, setNameFilter] = useState(initialQuery.get('q') || '');
+  const [tagFilter, setTagFilter] = useState(initialQuery.get('tag') || '');
+  const [stateFilter, setStateFilter] = useState(() =>
+    (initialQuery.get('state') || '').split(',').filter(Boolean)
+  ); // multi-selection via la legende
+  const [zoomAuto, setZoomAuto] = useState(initialQuery.get('zoom') !== 'day'); // false = journee complete 24 h
+  const [sortKey, setSortKey] = useState(
+    SORT_OPTIONS.some((o) => o.value === hydratedSort) ? hydratedSort : DEFAULT_SORT
+  );
+
+  // Largeur reelle de la zone de temps (px) -> sait quelles barres peuvent afficher leur duree.
+  const chartRef = useRef(null);
+  const [chartWidth, setChartWidth] = useState(0);
+
+  useUrlSync({
+    date: date !== todayLocal() ? date : '',
+    q: nameFilter.trim(),
+    tag: tagFilter,
+    state: stateFilter.join(','),
+    sort: sortKey !== DEFAULT_SORT ? sortKey : '',
+    zoom: zoomAuto ? '' : 'day',
+  });
 
   const fetchData = useCallback(
     async (cancelToken) => {
@@ -248,12 +392,6 @@ const DagGanttWidget = () => {
     return () => clearInterval(timer);
   }, []);
 
-  // Fenetre = journee locale [00:00, 24:00)
-  const { windowStart, windowSpan } = useMemo(() => {
-    const start = new Date(`${date}T00:00:00`).getTime();
-    return { windowStart: start, windowSpan: 24 * 3600 * 1000 };
-  }, [date]);
-
   const allTags = useMemo(
     () => Array.from(new Set(data.runs.flatMap((r) => r.tags))).sort(),
     [data.runs]
@@ -265,6 +403,16 @@ const DagGanttWidget = () => {
     );
   }, [data.runs]);
 
+  // Legende = tous les etats connus, meme absents de la journee (grises, non cliquables).
+  const legendStates = useMemo(
+    () => STATE_ORDER.concat(allStates.filter((s) => !STATE_ORDER.includes(s))),
+    [allStates]
+  );
+  const toggleState = useCallback((s) => {
+    setStateFilter((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : prev.concat(s)));
+  }, []);
+  const stateSet = useMemo(() => new Set(stateFilter), [stateFilter]);
+
   // Filtrage instantane sans rappel API
   const filtered = useMemo(() => {
     const needle = nameFilter.trim().toLowerCase();
@@ -272,33 +420,84 @@ const DagGanttWidget = () => {
       (r) =>
         (!needle || r.dag_id.toLowerCase().includes(needle) || r.run_id.toLowerCase().includes(needle)) &&
         (!tagFilter || r.tags.includes(tagFilter)) &&
-        (!stateFilter || (r.state || 'none') === stateFilter)
+        (!stateFilter.length || stateSet.has(r.state || 'none'))
     );
-  }, [data.runs, nameFilter, tagFilter, stateFilter]);
+  }, [data.runs, nameFilter, tagFilter, stateFilter, stateSet]);
 
-  // Une ligne par DAG, triee par 1ere start
+  // Une ligne par DAG, triee selon le critere choisi
   const rows = useMemo(() => {
     const byDag = new Map();
     filtered.forEach((r) => {
       if (!byDag.has(r.dag_id)) byDag.set(r.dag_id, []);
       byDag.get(r.dag_id).push(r);
     });
-    return Array.from(byDag.entries())
-      .map(([dagId, runs]) => {
-        runs.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
-        return { dagId, runs, tags: runs[0].tags || [], firstStart: Date.parse(runs[0].start) };
-      })
-      .sort((a, b) => a.firstStart - b.firstStart);
-  }, [filtered]);
+    const list = Array.from(byDag.entries()).map(([dagId, runs]) => {
+      runs.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+      const lastRun = runs[runs.length - 1];
+      const lastEnd = Date.parse(lastRun.end) || Date.parse(lastRun.start) || now;
+      const maxDuration = Math.max(
+        ...runs.map((r) => (r.end ? Date.parse(r.end) : now) - Date.parse(r.start))
+      );
+      return {
+        dagId,
+        runs,
+        tags: runs[0].tags || [],
+        firstStart: Date.parse(runs[0].start),
+        lastEnd,
+        count: runs.length,
+        maxDuration,
+      };
+    });
+    const comparators = {
+      first: (a, b) => b.firstStart - a.firstStart,
+      last: (a, b) => b.lastEnd - a.lastEnd,
+      duration: (a, b) => b.maxDuration - a.maxDuration,
+      count: (a, b) => b.count - a.count || a.dagId.localeCompare(b.dagId),
+      name: (a, b) => a.dagId.localeCompare(b.dagId),
+    };
+    return list.sort(comparators[sortKey] || comparators[DEFAULT_SORT]);
+  }, [filtered, sortKey, now]);
 
-  // Graduations horaires (label 1x / 2h)
+  // Fenetre affichee : zoom auto sur les runs filtres ou journee complete.
+  const dayStart = useMemo(() => new Date(`${date}T00:00:00`).getTime(), [date]);
+
+  // Mesure de la zone de temps (le header de l'echelle fait la meme largeur que les rangees)
+  const hasRows = rows.length > 0;
+  useEffect(() => {
+    const el = chartRef.current;
+    if (!el) return undefined;
+    if (typeof ResizeObserver === 'undefined') {
+      setChartWidth(el.getBoundingClientRect().width);
+      return undefined;
+    }
+    const observer = new ResizeObserver((entries) => {
+      const w = entries[0] && entries[0].contentRect ? entries[0].contentRect.width : 0;
+      if (w) setChartWidth(w);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasRows]);
+  const { windowStart, windowSpan, zoomed } = useMemo(
+    () => computeWindow(filtered, dayStart, zoomAuto, now),
+    [filtered, dayStart, zoomAuto, now]
+  );
+
+  // Graduations adaptatives : palier choisi pour <= MAX_TICKS traits, aligne sur minuit local.
   const ticks = useMemo(() => {
+    const stepMs = pickStepMs(windowSpan);
     const out = [];
-    for (let h = 0; h <= 24; h += 1) {
-      out.push({ pct: (h / 24) * 100, label: h % 2 === 0 ? `${String(h % 24).padStart(2, '0')}h` : '' });
+    const first = dayStart + Math.ceil((windowStart - dayStart) / stepMs) * stepMs;
+    const end = windowStart + windowSpan;
+    for (let t = first; t <= end + 1; t += stepMs) {
+      const d = new Date(t);
+      const label =
+        stepMs < 3600000
+          ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : `${String(d.getHours()).padStart(2, '0')}h`;
+      out.push({ t, pct: ((t - windowStart) / windowSpan) * 100, label });
     }
     return out;
-  }, []);
+  }, [dayStart, windowStart, windowSpan]);
 
   return (
     <Box p={4} maxW="100%" overflowX="auto">
@@ -320,11 +519,22 @@ const DagGanttWidget = () => {
             onChange={(e) => setNameFilter(e.target.value)}
           />
           <Select value={tagFilter} onChange={setTagFilter} options={allTags} placeholder="Tous les tags" />
-          <Select value={stateFilter} onChange={setStateFilter} options={allStates} placeholder="Tous les états" />
+          <Select value={sortKey} onChange={setSortKey} options={SORT_OPTIONS} />
           <Button size="sm" variant="outline" onClick={() => fetchData()}>
             ⟳ Refresh
           </Button>
+          <Button
+            size="sm"
+            variant={zoomAuto ? 'solid' : 'outline'}
+            onClick={() => setZoomAuto((z) => !z)}
+            title="Zoom sur les runs filtres (3 h mini) / journee complete"
+          >
+            {zoomAuto ? '🔍 Zoom auto' : '🕐 Journée complète'}
+          </Button>
           <Spacer />
+          <Text fontSize="sm" color="fg.muted" title={zoomed ? 'Fenêtre ajustée aux runs filtrés' : 'Journée complète'}>
+            {fmtClock(windowStart)} → {fmtClock(windowStart + windowSpan)} · {fmtDuration(windowSpan)}
+          </Text>
           <Text fontSize="sm" color="fg.muted">
             {filtered.length} run{filtered.length > 1 ? 's' : ''}
             {data.truncated ? ' (tronqué, limite API)' : ''}
@@ -348,10 +558,10 @@ const DagGanttWidget = () => {
               <Box width={`${LABEL_WIDTH}px`} flexShrink={0} px={2}>
                 <Text fontSize="11px" fontWeight="bold">DAG ({date})</Text>
               </Box>
-              <Box position="relative" flex="1" height="22px">
+              <Box ref={chartRef} position="relative" flex="1" height="22px">
                 {ticks.map((t) => (
                   <Box
-                    key={t.pct}
+                    key={t.t}
                     position="absolute"
                     left={`${t.pct}%`}
                     top={0}
@@ -366,8 +576,8 @@ const DagGanttWidget = () => {
                     )}
                   </Box>
                 ))}
-                {/* ligne "maintenant" */}
-                {new Date(now).toDateString() === new Date(windowStart).toDateString() && (
+                {/* ligne "maintenant" : seulement si now est dans la fenetre affichee */}
+                {now >= windowStart && now <= windowStart + windowSpan && (
                   <Box
                     position="absolute"
                     left={`${((now - windowStart) / windowSpan) * 100}%`}
@@ -388,19 +598,59 @@ const DagGanttWidget = () => {
                 windowStart={windowStart}
                 windowSpan={windowSpan}
                 now={now}
+                chartWidth={chartWidth}
               />
             ))}
           </Box>
         )}
 
-        {/* Legende */}
+        {/* Legende = filtre multi-etats cliquable (rien selectionne = tous les etats) */}
         <HStack gap={4} flexWrap="wrap">
-          {STATE_ORDER.map((s) => (
-            <HStack key={s} gap={1}>
-              <Box width="12px" height="12px" borderRadius="2px" bg={STATE_COLORS[s]} />
-              <Text fontSize="12px" color="fg.muted">{s}</Text>
-            </HStack>
-          ))}
+          {legendStates.map((s) => {
+            const present = allStates.includes(s);
+            const active = stateSet.has(s);
+            return (
+              <HStack
+                key={s}
+                gap={1}
+                as="button"
+                type="button"
+                cursor={present ? 'pointer' : 'not-allowed'}
+                opacity={present ? 1 : 0.35}
+                onClick={present ? () => toggleState(s) : undefined}
+                title={
+                  !present
+                    ? `Aucun run « ${s} » cette journée`
+                    : active
+                      ? `Retirer le filtre « ${s} »`
+                      : 'Filtrer sur cet état (cumulable)'
+                }
+              >
+                <Box
+                  width="12px"
+                  height="12px"
+                  borderRadius="2px"
+                  bg={STATE_COLORS[s] || DEFAULT_COLOR}
+                  outline={active ? '2px solid' : 'none'}
+                  outlineColor="fg.default"
+                  outlineOffset="1px"
+                />
+                <Text
+                  fontSize="12px"
+                  color="fg.muted"
+                  fontWeight={active ? 'bold' : 'normal'}
+                  textDecoration={active ? 'underline' : 'none'}
+                >
+                  {s}
+                </Text>
+              </HStack>
+            );
+          })}
+          {stateFilter.length > 0 && (
+            <Button size="xs" variant="ghost" onClick={() => setStateFilter([])}>
+              ✕ tous les états
+            </Button>
+          )}
         </HStack>
       </VStack>
     </Box>

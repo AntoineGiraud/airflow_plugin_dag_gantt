@@ -8,6 +8,11 @@ Il se distribue comme un **vrai paquet pip**, découvert automatiquement par Air
 
 ![Global Dag Gantt](./docs/dag_gantt.png)
 
+La ligne de temps **zoome automatiquement sur les runs filtrés** (minimum 3 h, graduations
+adaptatives, journée complète à la demande) ; la légende fait aussi office de **filtre multi-états**
+et l'état de la vue — date, recherche, tag, états, tri, zoom — voyage dans l'**URL** : un simple
+copier-coller partage exactement la même image de la plateforme.
+
 - **Une ligne par DAG**, une barre par run, positionnée et dimensionnée en temps réel ;
 - **Couleurs et thème 100 % natifs** : le widget consomme le design system d'Airflow, branding
   d'instance inclus (mécanisme expliqué en §2.3) ;
@@ -151,6 +156,10 @@ un webpack-dev-server du poste dupliquerait une **seconde** instance de React da
 
 > ⚠️ `js`, `watch` et `py` écrivent **dans le conteneur** : c'est **jetable**. Un `astro dev
 > restart`/`kill` ou un rebuild remet la wheel d'origine — d'où `./dev.sh full` avant de committer.
+> Cas tordu vérifié : si le dernier `dev.sh js` arrive **après** le dernier `./build.sh`, le restart
+> suivant ré-installe la wheel d'avant le correctif — le navigateur obtient un bundle
+> *neuf-et-vieux* (nouvelles fonctions présentes, correctif absent, **aucune erreur console**).
+> Règle : après la dernière modif JS, le dernier mot est à `./build.sh`, jamais à `dev.sh js`.
 > Le bundle de la loop courte est celui de `webpack --mode development` (non minifié, stack traces
 > lisibles) : il n'est pas comparable à celui de `./build.sh`.
 
@@ -209,7 +218,7 @@ dag_gantt = "airflow_dag_gantt.plugin:DagGanttPlugin"
 | | dossier `plugins/` | **paquet pip** (ce plugin) |
 | --- | --- | --- |
 | atteint l'`api-server` en Kubernetes | ❌ montage absent → page vide | ✅ installé dans l'image, donc sur tous les pods |
-| versionné, dépendances déclarées | ❌ | ✅ `0.2.0`, `apache-airflow>=3.1` |
+| versionné, dépendances déclarées | ❌ | ✅ `0.3.0`, `apache-airflow>=3.1` |
 | consommable par un autre projet | ❌ copie de fichiers | ✅ wheel + `uv pip install --no-deps` |
 
 C'est la réponse au bug d'origine : en K8s, le montage de `plugins/` n'atteignait pas l'`api-server`
@@ -219,8 +228,8 @@ dossier — non versionné et restart à chaque changement.)
 ### 4.2 Builder, installer
 
 ```bash
-./build.sh    # → dist/airflow_dag_gantt-0.2.0-py3-none-any.whl  (LA seule wheel de dist/)
-uv pip install --no-deps ./dist/airflow_dag_gantt-0.2.0-py3-none-any.whl
+./build.sh    # → dist/airflow_dag_gantt-0.3.0-py3-none-any.whl  (LA seule wheel de dist/)
+uv pip install --no-deps ./dist/airflow_dag_gantt-0.3.0-py3-none-any.whl
 ```
 
 Quatre détails qui font la différence :
@@ -245,7 +254,7 @@ Diagnostic à lancer **dans le pod qui affiche l'UI** :
 
 ```bash
 airflow plugins --verbose
-# dag_gantt | … | source : airflow-dag-gantt==0.2.0: EntryPoint(name='dag_gantt', …)  ✅
+# dag_gantt | … | source : airflow-dag-gantt==0.3.0: EntryPoint(name='dag_gantt', …)  ✅
 #                    (et surtout PAS de $PLUGINS_FOLDER/dag_gantt_plugin.py)
 ```
 
@@ -278,7 +287,7 @@ besoin d'aucun egress.
 | listé, mais page vide / bundle 404 | `static/` hors de la wheel, ou `BUNDLE_PATH` mal pointé | `python -c "import airflow_dag_gantt as p,pathlib;print(list((pathlib.Path(p.__file__).parent/'static').iterdir()))"` |
 | entrée de menu absente | `lazy_load_plugins=True` **ou** `react_apps[0].name` ≠ clé `globalThis` (`'Dag Gantt'`) | `airflow config get-value core lazy_load_plugins`, console du bundle |
 | un `plugins/*.py` résiduel **éclipse** le paquet | **premier nom gagné** | `airflow plugins --verbose` montre la source gagnante → supprimer le résidu |
-| correctif « marche en local puis disparaît » | les copies de `./dev.sh js`/`py` vivent **dans le conteneur** | `./dev.sh full` puis re-tester ; `pip show -f airflow-dag-gantt` |
+| correctif « marche en local puis disparaît » — ou bundle *neuf-et-vieux* : nouvelles fonctions visibles, dernier fix absent, **console propre** | les copies de `./dev.sh js`/`py` vivent **dans le conteneur**, et le restart ré-installe la wheel de `dist/` — si elle précède la dernière modif JS, l'ancien bundle revient | `grep -c <motif-du-fix> <bundle servi>` vs `js/dist/…js` ; puis `./build.sh` + `./dev.sh full` |
 
 ---
 
