@@ -1,8 +1,26 @@
 astro
 .git
+.gitignore
 .env
 airflow_settings.yaml
 logs/
 .venv
 airflow.db
 airflow.cfg
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+
+# Le paquet : la wheel DOIT rester visible (COPY dist/ du Dockerfile).
+# Ne jamais ajouter dist/ ici.
+
+# Le plugin arrive en wheel : ses sources JS/Python, ses tests et sa doc
+# n'ont rien à faire dans l'image.
+js/
+src/
+tests/
+plans/
+docs/
+pyproject.toml
+hatch_build.py
+build.sh
