@@ -1,7 +1,7 @@
 """DAGs de demonstration du plugin Global Dag Gantt.
 
 Objectif : peupler la vue Gantt avec des runs varies (success / failed / running,
-tags differents, chevauchements) sans toucher aux DAGs advent.
+tags differents, chevauchements) sans mobiliser le moindre DAG d'exemple.
 
 - gantt_demo_finance : @hourly + catchup depuis minuit UTC -> barres success successives.
 - gantt_demo_quality : @hourly + catchup, quality_gate echoue les heures paires -> barres failed.

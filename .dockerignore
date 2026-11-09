@@ -2,6 +2,7 @@ astro
 .git
 .gitignore
 .env
+.env.example
 airflow_settings.yaml
 logs/
 .venv
@@ -24,3 +25,4 @@ docs/
 pyproject.toml
 hatch_build.py
 build.sh
+dev.sh

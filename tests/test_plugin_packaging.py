@@ -4,8 +4,9 @@
 après `bun run build`) :
 
     ./build.sh && uv venv && uv pip install -e '.[dev]' && uv run pytest
-    # ou, sans venv local, dans l'image Astro :
-    docker run --rm --entrypoint bash -v "$PWD":/work advent-calendar_03e69c/airflow:latest \\
+    # ou, sans venv local, dans l'image Astro du projet (tag `<projet>_<hash>/airflow:latest`,
+    # voir `docker images`) ; `astro dev` monte `tests/` mais pas `js/` → 2 tests skipés :
+    docker run --rm --entrypoint bash -v "$PWD":/work dag-gantt_f2938e/airflow:latest \\
         -c 'pip install --no-cache-dir /work/dist/*.whl pytest && cd /work && pytest -q tests'
 """
 

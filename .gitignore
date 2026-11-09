@@ -1,4 +1,5 @@
-.git
+# Config locale du poste : `.env.example` est versionné, `.env` ne l'est jamais
+# (modèle : `cp .env.example .env`).
 .env
 .DS_Store
 airflow_settings.yaml

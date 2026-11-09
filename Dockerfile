@@ -22,6 +22,8 @@ assert 'dag_gantt' in names, names; print('entry point ok:', sorted(names))"
 # $AIRFLOW_HOME. Vérifier au runtime : `astro dev run airflow plugins --verbose`.
 USER astro
 
-# NB : les hooks ONBUILD de l'image (packages.txt, requirements.txt, COPY . .)
-# s'exécutent APRÈS cette étape ; le volet démo (plugins/advent_calendar_plugin.py)
-# reste copié par ce `COPY . .`.
+# NB : les hooks ONBUILD de l'image (`COPY packages.txt .`, `COPY requirements.txt .`,
+# `COPY . .`) s'exécutent APRÈS cette étape — d'où packages.txt et requirements.txt
+# préservés **même vides** : absents, le build échoue avant d'arriver à notre `COPY dist/`.
+# Depuis le retrait du volet Advent Calendar, `COPY . .` n'amène plus que `dags/` : le
+# plugin vient exclusivement de la wheel installée ci-dessus, plus rien de `plugins/`.

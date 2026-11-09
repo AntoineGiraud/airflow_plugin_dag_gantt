@@ -48,8 +48,9 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
-# Squelette généré par `astro dev init` : pas notre style, pas notre lint.
-extend-exclude = ["tests/dags"]
+# Squelette généré par `astro dev init`, marqué « DO NOT EDIT » : pas notre style, pas
+# notre lint (I001/E501/SIM910/UP015 y sont structurels).
+extend-exclude = [".astro"]
 
 [tool.ruff.lint]
 # Règles utiles sans être punitives ; DTZ/BLE/RUF012 sont volontairement hors
