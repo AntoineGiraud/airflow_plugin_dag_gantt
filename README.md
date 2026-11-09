@@ -159,8 +159,11 @@ personnalisé. Un faux plugin de 10 lignes suffirait :
 
 ```bash
 # 1. Prérequis : Astro CLI (≥ 1.34) + Docker, et bun pour rebuilder le frontend (optionnel)
+#    Python : 3.12 → 3.14. Inutile de chercher la bonne version : le runtime `3.3-12` vise
+#    **Python 3.14 par défaut** (le `-12` est le patch du runtime Astro, PAS la version de Python)
+#    — le conteneur de ce dépôt répond `py 3.14.10` / `airflow 3.3.2+astro.3`.
 cp .env.example .env                 # config locale (nom d'instance + thème UI) : .env n'est pas versionné
-./build.sh                           # bun + uv → dist/airflow_dag_gantt-0.1.0-py3-none-any.whl
+./build.sh                           # bun + uv → dist/airflow_dag_gantt-0.2.0-py3-none-any.whl
 astro dev start                      # l'image du projet installe la wheel (voir Dockerfile)
 
 # 2. Alimenter la journée de démo :
@@ -231,19 +234,21 @@ dépôt) — utile quand plusieurs environnements `astro dev` tournent en parall
 ## 6. Structure du dépôt
 
 ```text
-pyproject.toml                    métadonnées du paquet + entry point airflow.plugins
+pyproject.toml                    métadonnées du paquet + entry point airflow.plugins (py 3.12 → 3.14)
+LICENSE                           MIT — embarquée dans le wheel (`license-files` du pyproject)
 .env.example                      modèle de config locale → `cp .env.example .env` (`.env` est gitignoré)
 hatch_build.py                    hook : câble js/dist → src/airflow_dag_gantt/static
-build.sh                          bun run build + uv build --wheel → dist/*.whl
+build.sh                          purge dist/ + bun run build + uv build --wheel → dist/*.whl
 dev.sh                            boucle de dev courte : pousser dans le conteneur qui tourne (§5.2)
-Dockerfile                        runtime Astro + pip install de la wheel (valide l'entry point)
+Dockerfile                        runtime Astro + pip install de la wheel LOCALE (valide l'entry point)
+.github/workflows/ci.yml          lint + résolution 3.12/3.13/3.14 + build/tests (Python 3.14)
 src/airflow_dag_gantt/
   plugin.py                       DagGanttPlugin(AirflowPlugin)  ← cible de l'entry point
   api.py                          app FastAPI + requêtes SQLAlchemy
   static/                         bundle JS copié au build (gitignoré)
 js/                               sources React du Gantt (webpack + bun, externals globalThis)
 dags/gantt_demo.py                3 DAGs de démo (success / failed / running, tags)
-tests/test_plugin_packaging.py    entry point, URLs, bundle, contrat d'API
+tests/test_plugin_packaging.py    entry point, URLs, bundle, contrat d'API, cohérence de version
 docs/                             capture d'écran
 plans/                            plans d'architecture des features
 
@@ -269,44 +274,65 @@ chargé est **la classe** `AirflowPlugin`, instanciée sans argument, sur **chaq
 | | `plugins/` (dossier) | **paquet pip** (ce plugin) |
 | --- | --- | --- |
 | atteint l'`api-server` en Kubernetes | ❌ (le montage `plugins/` manque → la page reste vide) | ✅ présent dans l'image, donc sur tous les pods |
-| versionné / versionné sémantiquement | ❌ | ✅ `0.1.0`, wheel, registre interne |
+| versionné / versionné sémantiquement | ❌ | ✅ `0.2.0` + wheel, version vérifiée en CI |
 | dépendances déclarées | ❌ | ✅ `apache-airflow>=3.1` |
-| installable dans un autre projet | ❌ (copie de fichiers) | ✅ `uv pip install`, `git+ssh`, Nexus |
+| installable dans un autre projet | ❌ (copie de fichiers) | ✅ wheel locale (`uv pip install --no-deps`), Nexus |
 | testable hors Airflow | ❌ | ✅ `tests/test_plugin_packaging.py` |
 
 ### 7.1 Builder
 
 ```bash
 ./build.sh        # js/ → bun run build → DAG_GANTT_JS_DIR=js/dist uv build --wheel
-# dist/airflow_dag_gantt-0.1.0-py3-none-any.whl
+# dist/airflow_dag_gantt-0.2.0-py3-none-any.whl   ← LA SEULE wheel de dist/
 ```
 
-Trois détails qui font la différence :
+Quatre détails qui font la différence :
 
 - le hook `hatch_build.py` **refuse** de produire un wheel sans bundle : pas d'UI cassée
   silencieusement (`DAG_GANTT_JS_DIR is required: run \`bun run build\`…`) ;
 - `artifacts = ["/src/airflow_dag_gantt/static/*"]` dans `pyproject.toml` : `static/` est
   gitignoré, donc sans cette ligne hatch l'exclurait du wheel ;
 - `uv build --wheel` et non `uv build` : l'sdist est écrit **avant** le wheel, un échec du
-  hook laisserait un `.tar.gz` orphelin. L'sdist, lui, reste buildable **sans** bun.
+  hook laisserait un `.tar.gz` orphelin. L'sdist, lui, reste buildable **sans** bun — mais il
+  n'est **pas installable** sans bun (même hook), donc il n'est jamais publié ;
+- `build.sh` **purge `dist/*.whl`** avant de builder : avec deux wheels dans `dist/`, le
+  `pip install …/airflow_dag_gantt-*.whl` du `Dockerfile` reçoit deux arguments et le build
+  Astro tombe — piège classique juste après un bump de version.
 
 ### 7.2 Installer
 
+> ⚠️ **`pip install airflow-dag-gantt` n'est PAS une commande de ce projet.** Le nom
+> `airflow-dag-gantt` appartient sur PyPI public à **un autre plugin** (un autre Gantt pour
+> Airflow 3, sans rapport avec celui-ci). Conséquence opérationnelle : ne jamais installer ce nom
+> depuis PyPI, et **ne jamais mélanger** `--extra-index-url` PyPI public et un index interne qui
+> publierait ce même nom — c'est la définition même de la [*dependency
+> confusion*](https://blog.trailofbits.com/2019/04/02/attackers-can-leverage-name-confusion-to-hijack-private-packages/).
+> Ce projet ne publie **nulle part** : il se consomme en wheel locale (§7.3).
+
 ```bash
-uv pip install ./dist/airflow_dag_gantt-0.1.0-py3-none-any.whl   # wheel locale (recommandé)
-uv pip install "git+ssh://git@github.com/AntoineGiraud/airflow_plugin_dag_gantt.git@v0.1.0"  # ⚠ nécessite bun
-pip install airflow-dag-gantt                                    # depuis un registre interne (Nexus/Artifactory)
+# wheel locale — c'est LE mode de ce dépôt (et ce que consomme `./dev.sh full`).
+# `--no-deps` : dans une image Astro/Airflow, apache-airflow est déjà présent ; sans ce drapeau,
+# pip résoudrait `apache-airflow>=3.1` et ferait descendre un Airflow parallèle dans la couche.
+uv pip install --no-deps ./dist/airflow_dag_gantt-0.2.0-py3-none-any.whl
+
+# ❌ à connaître pour l'éviter : `pip install git+ssh://…@v0.2.0` échoue, et c'est voulu. Depuis
+# les sources, le hook de build exige bun + `DAG_GANTT_JS_DIR` : `hatch_build.py` refuse de
+# produire quoi que ce soit sans bundle. Une machine qui installe n'exécute donc AUCUN code de
+# build — c'est précisément ce qu'on demande à un paquet qui se déploie dans un api-server.
 ```
 
 Puis le diagnostic à connaître, à lancer **dans le conteneur/pod qui affiche l'UI** :
 
 ```bash
 airflow plugins --verbose
-# dag_gantt | … | source : airflow-dag-gantt==0.1.0: EntryPoint(name='dag_gantt', …)  ✅
+# dag_gantt | … | source : airflow-dag-gantt==0.2.0: EntryPoint(name='dag_gantt', …)  ✅
 #                            (et surtout PAS de $PLUGINS_FOLDER/dag_gantt_plugin.py)
 ```
 
 ### 7.3 Dans une image Docker
+
+Un seul mode, le mode **local** : aucun egress au build, `./dev.sh full` fonctionne hors-ligne,
+et la garantie d'intégrité vient du disque (c'est toi qui as buildé la wheel).
 
 ```dockerfile
 FROM astrocrpublic.azurecr.io/runtime:3.3-12
@@ -320,6 +346,11 @@ Une **wheel** ne déclenche aucun build backend → bun n'est pas requis dans l'
 installation **depuis les sources** (`pip install .`) l'exigerait, et échouerait si `js/dist`
 n'a pas été buildé — c'est voulu.
 
+> **Publier un jour ?** La piste est écrite au §8 (Release GitHub épinglée par sha256, ou
+> PyPI **sous un autre nom**). Elle n'est **pas** implémentée : pour un POC dont le seul
+> consommateur est la propre image du projet, un index public et une chaîne de signature ne
+> payent pas leur loyer.
+
 ### 7.4 ⚠️ Piège spécifique à Astro CLI : la wheel ne peut PAS passer par `requirements.txt`
 
 Vérifié sur Astro CLI 1.47 / runtime `3.3-12` : les hooks ONBUILD de l'image font
@@ -328,7 +359,7 @@ Vérifié sur Astro CLI 1.47 / runtime `3.3-12` : les hooks ONBUILD de l'image f
 moment du `pip install` :
 
 ```
-error: Distribution not found at: file:///usr/local/airflow/dist/airflow_dag_gantt-0.1.0-py3-none-any.whl
+error: Distribution not found at: file:///usr/local/airflow/dist/airflow_dag_gantt-0.2.0-py3-none-any.whl
 ```
 
 **Il faut installer la wheel dans le `Dockerfile` du projet** (bloc §7.3), qui s'exécute avant
@@ -350,13 +381,48 @@ dans `.dockerignore`.
 > changer d'image, mais garde un dossier non versionné et impose un restart à chaque
 > changement de code. Le paquet pip règle le problème à la racine.
 
+### 7.6 Tests (et leur installation)
+
+```bash
+./build.sh
+uv venv .venv && uv pip install --python .venv/bin/python dist/*.whl pytest httpx
+AIRFLOW_HOME=$PWD/.airflow-home .venv/bin/airflow db migrate   # 2 s sur sqlite
+AIRFLOW_HOME=$PWD/.airflow-home .venv/bin/pytest -q -rs tests   # → 8 passed
+```
+
+Installer **la wheel**, pas `-e .` : l'editable échoue sans `DAG_GANTT_JS_DIR` (le hook s'y
+applique aussi) et, surtout, un editable ne teste pas l'artefact réellement livré. `httpx` est
+requis par `fastapi.testclient` — sans lui, `test_api_runs_contract` se **tait** au lieu
+d'échouer. Sans métadatabase, ce même test se skip (il sonde la vraie table `dag_run`) : d'où le
+`db migrate` ci-dessus, et le `-rs` qui garde les skips visibles. Dans l'image Astro du projet,
+`astro dev` monte `tests/` mais pas `js/` → deux tests se skipent, c'est attendu (en-tête de
+`tests/test_plugin_packaging.py`).
+
 ## 8. Et maintenant ?
 
-Le dépôt est désormais la maison d'un plugin **paquet** : chaque nouveau plugin coûte un
-sous-projet `src/<paquet>/`, un dossier React, un entry point et un `build.sh`. Pistes pour
-celui-ci : durcir l'API (`GetUserDep`), fenêtre glissante multi-jours, surcouche « criticité »
-par tag, panneaux `dashboard`, publication sur un registre interne (Nexus/Artifactory) et
-validation sur le Helm Chart officiel `apache/airflow` (voir `plans/`).
+Le dépôt est la maison d'un plugin **paquet** — pas d'une plateforme. Ce qui est volontairement
+**hors** du POC, et pourquoi :
+
+- **publication** (Release GitHub, TestPyPI, PyPI, Nexus) : le seul consommateur du plugin est la
+  propre image de ce projet, via `COPY dist/`. Un canal de distribution + ses gardes (attestations
+  SLSA, immutability, Trusted Publishing, environment à revue humaine) ne payent leur loyer que
+  quand quelqu'un **d'autre** installe l'artefact. La chaîne complète a été conçue, chiffrée en
+  coûts et en risques, puis écartée : elle est capitalisée dans
+  `plans/20261109_03_python-313-314-et-release-github.md` (annexe A). Si un jour le
+  plugin se déploie ailleurs, la recette y est (tag → wheel → Release épinglée par `#sha256=` →
+  attestations), y compris le fait que **le nom `airflow-dag-gantt` est pris sur PyPI** (§7.2) donc
+  qu'il faudrait un autre nom pour un index public.
+- ** Dependabot / osv-scanner** : les 5 actions de la CI sont épinglées par SHA, donc à remonter à
+  la main (5 min, 4 fois par an). Le vrai risque de ce dépôt reste **npm/bun** — ce que produit
+  webpack s'exécute dans l'UI Airflow — et `js/bun.lock` est versionné (`--frozen-lockfile` en CI).
+- **matrice multi-Python d'exécution** : la CI prouve la **résolution** des métadonnées en
+  3.12/3.13/3.14 et **l'exécution** en 3.14 (la version du runtime). Tester aussi la borne basse
+  (`airflow 3.1` × Python 3.12) demanderait les `constraints-*` d'Airflow, donc 3 environnements
+  complets — hors budget pour un POC.
+
+Le reste des pistes produit : durcir l'API (`GetUserDep`), fenêtre glissante multi-jours, surcouche
+« criticité » par tag, panneaux `dashboard`, validation sur le Helm Chart officiel `apache/airflow`
+(voir `plans/`).
 
 Côté outillage : le `./dev.sh watch` à ~1,2 s couvre aujourd'hui tout le confort utile. Si un
 jour le frontend grossit au point de réclamer un vrai HMR, la piste n'est **pas** un

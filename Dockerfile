@@ -7,6 +7,12 @@ FROM astrocrpublic.azurecr.io/runtime:3.3-12
 # La wheel est produite localement par ./build.sh (bun + uv) : `dist/` ne doit
 # donc JAMAIS être dans .dockerignore. Une wheel ne déclenche aucun build backend
 # → bun n'est pas requis dans l'image.
+#
+# MODE LOCAL, unique mode retenu : la wheel vient du disque, donc zéro egress (le build marche
+# hors-ligne, `./dev.sh full` inclus) et la garantie d'intégrité vient de ce que VOUS avez buildé.
+# Publier l'artefact (Release GitHub épinglée par sha256, index interne, PyPI sous un autre nom)
+# est délibérément hors POC : le savoir est capitalisé dans
+# `plans/20261109_03_python-313-314-et-release-github.md` et le README §8.
 COPY dist/ /tmp/plugin-dist/
 
 # site-packages n'est pas writable par astro (uid 50000, groupe root mais r-x
