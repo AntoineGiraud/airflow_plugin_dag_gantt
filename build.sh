@@ -7,6 +7,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Un seul wheel dans `dist/`, sinon le `pip install …/airflow_dag_gantt-*.whl` du Dockerfile reçoit
+# DEUX arguments (l'ancien + le nouveau après un bump de version) et le build Astro tombe.
+# On ne purge pas `dist/` en entier : le dossier est au `.dockerignore`-contrôlé, pas versionné.
+rm -f dist/*.whl dist/*.tar.gz
+
 ( cd js && bun install && bun run build )
 
 DAG_GANTT_JS_DIR=js/dist uv build --wheel

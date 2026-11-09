@@ -1,28 +1,38 @@
 [build-system]
-requires = ["hatchling>=1.25"]
+# 1.26 = premier hatchling à gérer PEP 639 (`license` SPDX + `license-files`).
+requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [project]
 name = "airflow-dag-gantt"
-version = "0.1.0"
+version = "0.2.0"
 description = "Global Dag Gantt — vue macro de tous les DagRun d'une journée (Airflow 3.1+)"
 readme = "README.md"
-requires-python = ">=3.10"
-license = { text = "MIT" }
+# 3.12 = plancher réel du déploiement : Astro Runtime 3.2/3.3 = Python 3.12–3.14 (défaut 3.14),
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Antoine Giraud" }]
 keywords = ["airflow", "plugin", "gantt", "dag", "observability"]
 classifiers = [
     "Framework :: Apache Airflow",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 # Ne PAS épingler 3.3 : react_apps/fastapi_apps existent depuis Airflow 3.1.
 dependencies = ["apache-airflow>=3.1"]
 
+[project.urls]
+Homepage = "https://github.com/AntoineGiraud/airflow_plugin_dag_gantt"
+Repository = "https://github.com/AntoineGiraud/airflow_plugin_dag_gantt"
+Issues = "https://github.com/AntoineGiraud/airflow_plugin_dag_gantt/issues"
+
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+# httpx : requis par `fastapi.testclient` — sans lui, `test_api_runs_contract` se **taisait**
+# (skip silencieux) hors conteneur. Un extra de test qui skippe son propre test ne sert à rien.
+dev = ["pytest>=8", "ruff>=0.6", "httpx>=0.27"]
 
 # Découverte automatique par Airflow : pas de fichier dans $PLUGINS_FOLDER.
 [project.entry-points."airflow.plugins"]
@@ -48,9 +58,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
-# Squelette généré par `astro dev init`, marqué « DO NOT EDIT » : pas notre style, pas
-# notre lint (I001/E501/SIM910/UP015 y sont structurels).
-extend-exclude = [".astro"]
+extend-exclude = [".astro", "*.md"]
 
 [tool.ruff.lint]
 # Règles utiles sans être punitives ; DTZ/BLE/RUF012 sont volontairement hors

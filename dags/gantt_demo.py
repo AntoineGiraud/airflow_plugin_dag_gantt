@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import random
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from airflow.sdk import dag, get_current_context, task
 
 
 def _today_utc_midnight() -> datetime:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 

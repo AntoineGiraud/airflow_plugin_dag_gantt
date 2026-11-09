@@ -5,7 +5,7 @@ Importé par `plugin.py` (et testable sans plugin : `TestClient(app)`).
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +38,8 @@ def _day_window(date_str: str | None) -> tuple[datetime, datetime]:
                 detail="date must use the YYYY-MM-DD format",
             ) from exc
     else:
-        day = datetime.now(timezone.utc)
-    day_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        day = datetime.now(UTC)
+    day_start = datetime(day.year, day.month, day.day, tzinfo=UTC)
     return day_start, day_start + timedelta(days=1)
 
 
