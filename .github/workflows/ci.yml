@@ -1,0 +1,132 @@
+# CI du plugin : prouve qu'une wheel buildée ici est installable ET chargeable.
+#
+# Trois jobs volontairement disjoints :
+#   lint    → style (rapide, aucune dépendance lourde)
+#   resolve → les métadonnées se résolvent-elles en 3.12 / 3.13 / 3.14 ? (aucune installation :
+#             `uv pip compile` ne fait que résoudre, ~10 s, et c'est CE qui prouve la promesse
+#             « supporte Python 3.13 et 3.14 » au niveau des métadonnées)
+#   test    → ./build.sh (bun + webpack + hatch) puis installation de LA WHEEL (pas un editable :
+#             un editable ne prouve rien sur l'artefact publié) puis pytest en Python 3.14
+#
+# Sécurité : `permissions: contents: read` au plus haut niveau — ce workflow n'écrit rien.
+# Actions épinglées par SHA (`@<sha>  # vX.Y.Z`) : un tag mobile peut être déplacé par son auteur
+# ou par un compte piraté ; Dependabot (non activé ici) devra donc les remonter à la main.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # Bun et uv ne sont pas des dépendances de runtime (la wheel ne déclenche aucun build backend) :
+  # ce sont les outils du build, les mêmes qu'en local dans ./build.sh.
+  PYTHON_VERSION: "3.14"
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+      # `ruff check` ET `ruff format --check` : le second rattrape ce que le premier laisse passer.
+      # Deux choses vérifiées ici, qui surprennent les deux premières fois :
+      # - la config vit dans `pyproject.toml` `[tool.ruff]` (E,F,W,I,UP,B,C4,SIM ; line-length 100),
+      #   **sans** `target-version` : ruff le déduit de `requires-python` (= 3.12). Mettre `py314`
+      #   parce que « le runtime est en 3.14 » serait une faute : c'est la borne basse du code.
+      # - `extend-exclude` couvre `.astro` (squelette `astro dev init`, I001/E501/SIM910/UP015
+      #   structurels) et `*.md` : ruff **formate les blocs ```python des markdown**, donc un extrait
+      #   illustratif d'un plan suffirait à rendre la CI rouge.
+      - run: uvx ruff@0.16.1 check .
+      - run: uvx ruff@0.16.1 format --check .
+
+  resolve:
+    name: Résolution Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - name: "Résout apache-airflow + le plugin pour Python ${{ matrix.python }}"
+        # Si ça casse ici, c'est une incompatibilité de métadonnées (ex. requires-python trop bas
+        # pour l'airflow résolu), pas un bug de notre code — d'où le job séparé, et rapide.
+        run: uv pip compile pyproject.toml --python-version "$PYTHON_VERSION" -q -o /dev/null
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
+
+  test:
+    # Nom en dur : le contexte `env` n'est PAS disponible dans `jobs.<id>.name` (un
+    # `${{ env.PYTHON_VERSION }}` y rendrait un nom vide) — la valeur réelle est portée par l'étape
+    # setup-python ci-dessous.
+    name: Build + tests (Python 3.14)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # MÊME commande qu'en local : si la CI est verte et le local rouge (ou l'inverse), c'est
+      # l'environnement qui ment, pas le build. hatch_build.py refuse une wheel sans bundle →
+      # un build rouge vaut déjà test de l'UI.
+      - name: Bundle JS + wheel
+        run: ./build.sh
+
+      - name: Installer la wheel produite
+        # On installe le wheel, pas `-e .` : (1) c'est l'artefact réellement livré, (2) l'editable
+        # échoue sans DAG_GANTT_JS_DIR. httpx est requis par fastapi.testclient — sans lui,
+        # test_api_runs_contract se tait au lieu d'échouer.
+        #
+        # NB : sans contrainte, c'est la DERNIÈRE version d'airflow qui est résolue (3.4.0 au moment
+        # où cette ligne est écrite) alors que le runtime Astro vise 3.3.2+astro.3. Choix assumé :
+        # la CI sert ici à voir venir une régression, pas à rejouer le déploiement — la fidélité au
+        # runtime, c'est `./dev.sh full` sur l'image Astro du projet.
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python dist/*.whl pytest httpx
+          .venv/bin/python -c "from importlib.metadata import entry_points as e; names={p.name for p in e().select(group='airflow.plugins')}; assert 'dag_gantt' in names, names; print('entry point ok:', sorted(names))"
+
+      - name: pytest
+        # Sans métadatabase initialisée, `test_api_runs_contract` se SKIP (il sonde la vraie table
+        # `dag_run`) : le contrat d'API — la seule partie du dépôt qui touche SQLAlchemy — ne serait
+        # jamais exécuté en CI. `airflow db migrate` sur sqlite coûte **2,2 s** mesurées : le skip
+        # silencieux ne vaut pas ce prix-là.
+        env:
+          AIRFLOW_HOME: ${{ github.workspace }}/.airflow-home
+        run: |
+          mkdir -p "$AIRFLOW_HOME"
+          .venv/bin/airflow db migrate
+          .venv/bin/pytest -q -rs tests   # -rs : les skips restent VISIBLES dans le résumé
+
+      - name: Contrat de la wheel (ce que le Dockerfile consommateur va consommer)
+        run: |
+          set -euo pipefail
+          WHEEL=$(ls dist/*.whl)
+          python - "$WHEEL" <<'PY'
+          import sys, zipfile
+          wheel = sys.argv[1]
+          names = set(zipfile.ZipFile(wheel).namelist())
+          assert any(n.endswith("static/dag-gantt-widget.js") for n in names), names
+          assert any("dist-info/licenses/LICENSE" in n for n in names), names
+          assert wheel.endswith("-py3-none-any.whl"), wheel
+          print(f"{wheel}: bundle embarqué, LICENSE embarquée, tag universel")
+          PY

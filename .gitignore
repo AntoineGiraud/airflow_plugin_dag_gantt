@@ -12,6 +12,8 @@ airflow-webserver.pid
 webserver_config.py
 airflow.cfg
 airflow.db
+# `airflow db migrate` local/CI pour `test_api_runs_contract` (AIRFLOW_HOME du dépôt)
+.airflow-home/
 
 # Paquet airflow-dag-gantt : les artefacts de build ne se committent jamais.
 dist/
