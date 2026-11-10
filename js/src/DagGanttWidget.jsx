@@ -48,6 +48,15 @@ const todayLocal = () => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
 
+// Decale une date locale 'YYYY-MM-DD' de `days` jours (minuit local : pas de decalage UTC).
+const shiftDate = (iso, days) => {
+  const [y, m, d] = (iso || todayLocal()).split('-').map(Number);
+  if (!y || !m || !d) return todayLocal();
+  const dt = new Date(y, m - 1, d + days);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+};
+
 const fmtTime = (iso) =>
   iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
 
@@ -504,13 +513,34 @@ const DagGanttWidget = () => {
       <VStack alignItems="stretch" gap={3}>
         <HStack gap={3} flexWrap="wrap">
           <Text fontSize="xl" fontWeight="bold">📊 Global Dag Gantt</Text>
-          <Input
-            type="date"
-            size="sm"
-            width="auto"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-          />
+          <HStack gap={1}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setDate((d) => shiftDate(d, -1))}
+              title="Jour précédent"
+              aria-label="Jour précédent"
+            >
+              ⬅️
+            </Button>
+            <Input
+              type="date"
+              size="sm"
+              width="auto"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setDate((d) => shiftDate(d, 1))}
+              disabled={!date || date >= todayLocal()}
+              title={date >= todayLocal() ? "Aujourd'hui : pas de date future" : 'Jour suivant'}
+              aria-label="Jour suivant"
+            >
+              ➡️
+            </Button>
+          </HStack>
           <Input
             placeholder="Filtrer par nom de DAG ou run…"
             size="sm"

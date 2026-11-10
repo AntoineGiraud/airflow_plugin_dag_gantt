@@ -218,7 +218,7 @@ dag_gantt = "airflow_dag_gantt.plugin:DagGanttPlugin"
 | | dossier `plugins/` | **paquet pip** (ce plugin) |
 | --- | --- | --- |
 | atteint l'`api-server` en Kubernetes | ❌ montage absent → page vide | ✅ installé dans l'image, donc sur tous les pods |
-| versionné, dépendances déclarées | ❌ | ✅ `0.3.0`, `apache-airflow>=3.1` |
+| versionné, dépendances déclarées | ❌ | ✅ `0.4.0`, `apache-airflow>=3.1` |
 | consommable par un autre projet | ❌ copie de fichiers | ✅ wheel + `uv pip install --no-deps` |
 
 C'est la réponse au bug d'origine : en K8s, le montage de `plugins/` n'atteignait pas l'`api-server`
@@ -228,8 +228,8 @@ dossier — non versionné et restart à chaque changement.)
 ### 4.2 Builder, installer
 
 ```bash
-./build.sh    # → dist/airflow_dag_gantt-0.3.0-py3-none-any.whl  (LA seule wheel de dist/)
-uv pip install --no-deps ./dist/airflow_dag_gantt-0.3.0-py3-none-any.whl
+./build.sh    # → dist/airflow_dag_gantt-0.4.0-py3-none-any.whl  (LA seule wheel de dist/)
+uv pip install --no-deps ./dist/airflow_dag_gantt-0.4.0-py3-none-any.whl
 ```
 
 Quatre détails qui font la différence :
@@ -254,7 +254,7 @@ Diagnostic à lancer **dans le pod qui affiche l'UI** :
 
 ```bash
 airflow plugins --verbose
-# dag_gantt | … | source : airflow-dag-gantt==0.3.0: EntryPoint(name='dag_gantt', …)  ✅
+# dag_gantt | … | source : airflow-dag-gantt==0.4.0: EntryPoint(name='dag_gantt', …)  ✅
 #                    (et surtout PAS de $PLUGINS_FOLDER/dag_gantt_plugin.py)
 ```
 
