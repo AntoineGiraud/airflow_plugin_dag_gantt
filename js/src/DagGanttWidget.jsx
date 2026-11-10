@@ -30,9 +30,10 @@ const STATE_COLORS = {
 const DEFAULT_COLOR = 'gray.solid';
 const STATE_ORDER = ['queued', 'running', 'success', 'failed'];
 
-const LABEL_WIDTH = 240;
-const BAR_HEIGHT = 18;
-const BAR_GAP = 4;
+const LABEL_WIDTH = 280; // colonne de gauche : 150 px garantis au nom + place pour les badges
+const BAR_HEIGHT = 14;
+const BAR_GAP = 3;
+const ROW_HEIGHT = BAR_HEIGHT + BAR_GAP; // pas vertical d'une lane (px)
 const MAX_LANES = 6;
 const REFRESH_MS = 30000; // rafraichissement leger (barres running + donnees)
 
@@ -120,6 +121,60 @@ const computeWindow = (runs, dayStart, zoom, nowMs) => {
 };
 
 /* ------------------------------------------------------------------ */
+/* Tag principal & groupement (fonctions pures, testables sans React)  */
+/* ------------------------------------------------------------------ */
+
+const OTHER_GROUP = 'autre';
+
+const normalizeTag = (t) => String(t || '').trim().toLowerCase();
+
+// Liste d'étapes priorisées saisie par l'utilisateur : « collecte, normalisation, export ».
+const parseStages = (raw) =>
+  String(raw || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+// Classement auto des tags par fréquence décroissante sur les DAGs affichés
+// (égalité -> alphabétique : déterministe). Retourne Map tag -> rang (0 = mieux classé).
+const computeTagRank = (rows) => {
+  const freq = new Map();
+  rows.forEach((row) => {
+    new Set((row.tags || []).map(normalizeTag).filter(Boolean)).forEach((t) => {
+      freq.set(t, (freq.get(t) || 0) + 1);
+    });
+  });
+  const ranked = Array.from(freq.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const rank = new Map();
+  ranked.forEach(([t], i) => rank.set(t, i));
+  return rank;
+};
+
+// Tag principal d'un DAG : premier tag de la liste d'étapes présent sur le DAG (override),
+// sinon le tag le mieux classé par fréquence (auto). '' si aucun tag -> groupe « autre ».
+const primaryTagOf = (tags, stages, tagRank) => {
+  const lower = (tags || []).map((t) => [t, normalizeTag(t)]).filter(([, n]) => n);
+  if (stages.length) {
+    for (const stage of stages) {
+      const ns = normalizeTag(stage);
+      const hit = lower.find(([, n]) => n === ns);
+      if (hit) return hit[0];
+    }
+    return '';
+  }
+  let best = '';
+  let bestRank = Infinity;
+  lower.forEach(([t, n]) => {
+    const r = tagRank.has(n) ? tagRank.get(n) : Infinity;
+    if (r < bestRank) {
+      bestRank = r;
+      best = t;
+    }
+  });
+  return best;
+};
+
+/* ------------------------------------------------------------------ */
 /* Barre d'un run                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -149,12 +204,12 @@ const GanttBar = ({ run, windowStart, windowSpan, now, chartWidth }) => {
       bg={color}
       color="white"
       height={`${BAR_HEIGHT}px`}
-      borderRadius="4px"
+      borderRadius="3px"
       position="absolute"
       top={`${(run._lane || 0) * (BAR_HEIGHT + BAR_GAP)}px`}
       left={`${left}%`}
       width={`${width}%`}
-      fontSize="11px"
+      fontSize="10px"
       lineHeight={`${BAR_HEIGHT}px`}
       px={1}
       whiteSpace="nowrap"
@@ -193,7 +248,7 @@ const GanttBar = ({ run, windowStart, windowSpan, now, chartWidth }) => {
 /* Ligne d'un DAG (lane packing simple)                                */
 /* ------------------------------------------------------------------ */
 
-const DagRow = ({ dagId, runs, tags, windowStart, windowSpan, now, chartWidth }) => {
+const DagRow = ({ dagId, runs, tags, primaryTag, groupTag, windowStart, windowSpan, now, chartWidth }) => {
   // lanes gredy : chaque run dans la premiere lane libre
   const laneEnds = [];
   runs.forEach((run) => {
@@ -211,22 +266,36 @@ const DagRow = ({ dagId, runs, tags, windowStart, windowSpan, now, chartWidth })
     }
     run._lane = lane;
   });
-  const height = Math.max(laneEnds.length, 1) * (BAR_HEIGHT + BAR_GAP) + 4;
+  const height = Math.max(laneEnds.length, 1) * ROW_HEIGHT + 2;
+
+  // Badges : le tag principal est masque quand il est deja porte par l'en-tete de groupe ;
+  // sinon (liste plate) il reste en 1er badge. Max 2 badges au total, le reste en tooltip.
+  const primaryShown = !(groupTag && groupTag.toLowerCase() === (primaryTag || '').toLowerCase());
+  const secondary = tags.filter((t) => t !== primaryTag);
+  const shownTags = (primaryShown && primaryTag ? [primaryTag] : []).concat(secondary).slice(0, 2);
 
   return (
-    <Flex borderBottom="1px solid" borderColor="border.subtle" alignItems="flex-start" py={1}>
-      <Box width={`${LABEL_WIDTH}px`} flexShrink={0} pr={3} title={`${dagId}\ntags: ${tags.join(', ') || '—'}`}>
-        <Text fontSize="13px" fontWeight="semibold" truncate>
+    <Flex borderBottom="1px solid" borderColor="border.subtle" alignItems="center" py={0}>
+      <Box
+        width={`${LABEL_WIDTH}px`}
+        flexShrink={0}
+        px={2}
+        display="flex"
+        alignItems="center"
+        gap={1}
+        overflow="hidden"
+        height={`${height}px`}
+        title={`${dagId}\ntags: ${tags.join(', ') || '—'}`}
+      >
+        <Text fontSize="12px" fontWeight="semibold" truncate flexShrink={1} minW="150px">
           {dagId}
         </Text>
-        <HStack gap={1} flexWrap="wrap">
-          {tags.slice(0, 3).map((t) => (
-            <Badge key={t} size="sm" colorPalette="purple" fontSize="9px">{t}</Badge>
-          ))}
-          {runs.length > 1 && (
-            <Badge size="sm" colorPalette="gray" fontSize="9px">{runs.length}×{/* runs */ ''}</Badge>
-          )}
-        </HStack>
+        {shownTags.map((t) => (
+          <Badge key={t} size="sm" colorPalette="purple" fontSize="9px" flexShrink={0}>{t}</Badge>
+        ))}
+        {runs.length > 1 && (
+          <Badge size="sm" colorPalette="gray" fontSize="9px" flexShrink={0}>{runs.length}×{/* runs */ ''}</Badge>
+        )}
       </Box>
       <Box position="relative" flex="1" height={`${height}px`}>
         {runs.map((run) => (
@@ -243,6 +312,44 @@ const DagRow = ({ dagId, runs, tags, windowStart, windowSpan, now, chartWidth })
     </Flex>
   );
 };
+
+/* ------------------------------------------------------------------ */
+/* En-tete d'un groupe de tags (clic = replier / déplier)              */
+/* ------------------------------------------------------------------ */
+
+const GroupHeader = ({ group, collapsed, onToggle }) => (
+  <Flex
+    as="button"
+    type="button"
+    width="100%"
+    alignItems="center"
+    gap={2}
+    px={2}
+    py={1}
+    bg="bg.subtle"
+    borderBottomWidth="1px"
+    borderColor="border.subtle"
+    cursor="pointer"
+    onClick={onToggle}
+    title={collapsed ? 'Déplier ce groupe' : 'Replier ce groupe'}
+  >
+    <Text fontSize="11px" w="14px" flexShrink={0}>{collapsed ? '▶' : '▼'}</Text>
+    {group.tag ? (
+      <Badge size="sm" colorPalette="purple" fontSize="10px">{group.tag}</Badge>
+    ) : (
+      <Text fontSize="11px" fontStyle="italic" color="fg.muted">« {OTHER_GROUP} »</Text>
+    )}
+    <Text fontSize="11px" color="fg.muted">
+      {group.dagCount} DAG{group.dagCount > 1 ? 's' : ''} · {group.runCount} run{group.runCount > 1 ? 's' : ''}
+    </Text>
+    {group.failedCount > 0 && (
+      <HStack gap={1}>
+        <Box width="8px" height="8px" borderRadius="2px" bg="failed.solid" />
+        <Text fontSize="11px" color="failed.solid" fontWeight="bold">{group.failedCount} failed</Text>
+      </HStack>
+    )}
+  </Flex>
+);
 
 /* ------------------------------------------------------------------ */
 /* Widget principal                                                    */
@@ -284,7 +391,7 @@ const DEFAULT_SORT = 'first';
 /* --------- Etat des filtres dans l'URL (partageable, pas d'historique) --------- */
 
 const HasSearchParams = Boolean(Router && typeof Router.useSearchParams === 'function');
-const URL_KEYS = ['date', 'q', 'tag', 'state', 'sort', 'zoom'];
+const URL_KEYS = ['date', 'q', 'tag', 'state', 'sort', 'zoom', 'group', 'stages', 'collapsed'];
 
 const readInitialQuery = () => {
   try {
@@ -351,6 +458,14 @@ const DagGanttWidget = () => {
     SORT_OPTIONS.some((o) => o.value === hydratedSort) ? hydratedSort : DEFAULT_SORT
   );
 
+  // Groupement par tag principal (défaut : activé, ?group=0 = liste plate)
+  const [grouped, setGrouped] = useState(initialQuery.get('group') !== '0');
+  const [stagesText, setStagesText] = useState(initialQuery.get('stages') || ''); // ex. « collecte, normalisation, export »
+  const [collapsed, setCollapsed] = useState(() =>
+    // clés = tags normalisés (ou « autre »), séparés par des virgules dans l'URL
+    new Set((initialQuery.get('collapsed') || '').split(',').filter(Boolean))
+  );
+
   // Largeur reelle de la zone de temps (px) -> sait quelles barres peuvent afficher leur duree.
   const chartRef = useRef(null);
   const [chartWidth, setChartWidth] = useState(0);
@@ -362,6 +477,9 @@ const DagGanttWidget = () => {
     state: stateFilter.join(','),
     sort: sortKey !== DEFAULT_SORT ? sortKey : '',
     zoom: zoomAuto ? '' : 'day',
+    group: grouped ? '' : '0', // défaut : groupé -> rien dans l'URL
+    stages: stagesText.trim(),
+    collapsed: Array.from(collapsed).join(','),
   });
 
   const fetchData = useCallback(
@@ -467,6 +585,57 @@ const DagGanttWidget = () => {
     return list.sort(comparators[sortKey] || comparators[DEFAULT_SORT]);
   }, [filtered, sortKey, now]);
 
+  // ---- Groupement par tag principal (le tri choisi s'applique à l'intérieur des groupes) ----
+  const stages = useMemo(() => parseStages(stagesText), [stagesText]);
+  const tagRank = useMemo(() => computeTagRank(rows), [rows]);
+
+  const groups = useMemo(() => {
+    const byKey = new Map();
+    rows.forEach((row) => {
+      const primary = primaryTagOf(row.tags, stages, tagRank); // casse d'origine conservée
+      const key = normalizeTag(primary) || OTHER_GROUP;
+      if (!byKey.has(key)) byKey.set(key, { key, tag: primary, rows: [] });
+      byKey.get(key).rows.push({ ...row, primaryTag: primary });
+    });
+    const list = Array.from(byKey.values()).map((g) => ({
+      key: g.key,
+      tag: g.tag,
+      rows: g.rows,
+      dagCount: g.rows.length,
+      runCount: g.rows.reduce((n, r) => n + r.count, 0),
+      failedCount: g.rows.reduce(
+        (n, r) => n + r.runs.filter((run) => run.state === 'failed').length,
+        0
+      ),
+    }));
+    const stageIdx = new Map(stages.map((s, i) => [normalizeTag(s), i]));
+    const orderOf = (g) => (g.key !== OTHER_GROUP && stageIdx.has(g.key) ? stageIdx.get(g.key) : Infinity);
+    list.sort((a, b) => {
+      const otherA = a.key === OTHER_GROUP ? 1 : 0;
+      const otherB = b.key === OTHER_GROUP ? 1 : 0;
+      if (otherA !== otherB) return otherA - otherB; // « autre » toujours en dernier
+      const oa = orderOf(a);
+      const ob = orderOf(b);
+      if (oa !== ob) return oa - ob; // ordre des étapes…
+      return b.dagCount - a.dagCount || a.key.localeCompare(b.key); // …puis fréquence décroissante (auto)
+    });
+    return list;
+  }, [rows, stages, tagRank]);
+
+  const toggleCollapse = useCallback((key) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  const groupKeys = useMemo(() => groups.map((g) => g.key), [groups]);
+  const allCollapsed = groupKeys.length > 0 && groupKeys.every((k) => collapsed.has(k));
+  const toggleCollapseAll = useCallback(() => {
+    setCollapsed(() => (allCollapsed ? new Set() : new Set(groupKeys)));
+  }, [allCollapsed, groupKeys]);
+
   // Fenetre affichee : zoom auto sur les runs filtres ou journee complete.
   const dayStart = useMemo(() => new Date(`${date}T00:00:00`).getTime(), [date]);
 
@@ -549,7 +718,28 @@ const DagGanttWidget = () => {
             onChange={(e) => setNameFilter(e.target.value)}
           />
           <Select value={tagFilter} onChange={setTagFilter} options={allTags} placeholder="Tous les tags" />
+          <Input
+            placeholder="Étapes (tags, ordre de priorité)…"
+            size="sm"
+            maxW="220px"
+            value={stagesText}
+            onChange={(e) => setStagesText(e.target.value)}
+            title="Ex. collecte, normalisation, raffinement, export — le tag principal (donc le groupe) est le premier de cette liste présent sur le DAG. Vide = détection automatique."
+          />
           <Select value={sortKey} onChange={setSortKey} options={SORT_OPTIONS} />
+          <Button
+            size="sm"
+            variant={grouped ? 'solid' : 'outline'}
+            onClick={() => setGrouped((g) => !g)}
+            title="Regrouper les DAGs par tag principal / liste plate"
+          >
+            {grouped ? '🗂 Groupes' : '📄 Liste'}
+          </Button>
+          {grouped && groupKeys.length > 1 && (
+            <Button size="sm" variant="ghost" onClick={toggleCollapseAll}>
+              {allCollapsed ? '▸ Tout déplier' : '▾ Tout replier'}
+            </Button>
+          )}
           <Button size="sm" variant="outline" onClick={() => fetchData()}>
             ⟳ Refresh
           </Button>
@@ -588,7 +778,7 @@ const DagGanttWidget = () => {
               <Box width={`${LABEL_WIDTH}px`} flexShrink={0} px={2}>
                 <Text fontSize="11px" fontWeight="bold">DAG ({date})</Text>
               </Box>
-              <Box ref={chartRef} position="relative" flex="1" height="22px">
+              <Box ref={chartRef} position="relative" flex="1" height="20px">
                 {ticks.map((t) => (
                   <Box
                     key={t.t}
@@ -619,18 +809,44 @@ const DagGanttWidget = () => {
                 )}
               </Box>
             </Flex>
-            {rows.map((row) => (
-              <DagRow
-                key={row.dagId}
-                dagId={row.dagId}
-                runs={row.runs}
-                tags={row.tags}
-                windowStart={windowStart}
-                windowSpan={windowSpan}
-                now={now}
-                chartWidth={chartWidth}
-              />
-            ))}
+            {grouped
+              ? groups.map((group) => (
+                  <Box key={group.key}>
+                    <GroupHeader
+                      group={group}
+                      collapsed={collapsed.has(group.key)}
+                      onToggle={() => toggleCollapse(group.key)}
+                    />
+                    {!collapsed.has(group.key) &&
+                      group.rows.map((row) => (
+                        <DagRow
+                          key={row.dagId}
+                          dagId={row.dagId}
+                          runs={row.runs}
+                          tags={row.tags}
+                          primaryTag={row.primaryTag}
+                          groupTag={group.tag}
+                          windowStart={windowStart}
+                          windowSpan={windowSpan}
+                          now={now}
+                          chartWidth={chartWidth}
+                        />
+                      ))}
+                  </Box>
+                ))
+              : rows.map((row) => (
+                  <DagRow
+                    key={row.dagId}
+                    dagId={row.dagId}
+                    runs={row.runs}
+                    tags={row.tags}
+                    primaryTag={primaryTagOf(row.tags, stages, tagRank)}
+                    windowStart={windowStart}
+                    windowSpan={windowSpan}
+                    now={now}
+                    chartWidth={chartWidth}
+                  />
+                ))}
           </Box>
         )}
 

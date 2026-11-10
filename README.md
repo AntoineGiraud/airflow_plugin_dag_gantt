@@ -10,10 +10,13 @@ Il se distribue comme un **vrai paquet pip**, découvert automatiquement par Air
 
 La ligne de temps **zoome automatiquement sur les runs filtrés** (minimum 3 h, graduations
 adaptatives, journée complète à la demande) ; la légende fait aussi office de **filtre multi-états**
-et l'état de la vue — date, recherche, tag, états, tri, zoom — voyage dans l'**URL** : un simple
-copier-coller partage exactement la même image de la plateforme.
+et l'état de la vue — date, recherche, tag, états, tri, zoom, groupement — voyage dans l'**URL** :
+un simple copier-coller partage exactement la même image de la plateforme.
 
 - **Une ligne par DAG**, une barre par run, positionnée et dimensionnée en temps réel ;
+- **DAGs groupés par tag principal** (détection auto du tag le plus fréquent, ou liste d'étapes
+  priorisées façon `collecte, normalisation, export`) — en-têtes repliables, lignes compactes ;
+  `?group=0` revient à la liste plate ;
 - **Couleurs et thème 100 % natifs** : le widget consomme le design system d'Airflow, branding
   d'instance inclus (mécanisme expliqué en §2.3) ;
 - **Filtres instantanés** (nom de DAG/run, tag, état) sans rappel serveur ;
