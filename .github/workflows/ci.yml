@@ -85,6 +85,12 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Tests JS (module d'agrégation)
+        # `js/src/aggregation.js` est la seule partie du front testable sans navigateur
+        # (fonctions pures) — et c'est justement elle qui décide de ce qui est fusionné,
+        # de la couleur d'un bucket et du lien d'une barre. Zéro dépendance : bun/node suffit.
+        run: (cd js && bun install && bun run test)
+
       # MÊME commande qu'en local : si la CI est verte et le local rouge (ou l'inverse), c'est
       # l'environnement qui ment, pas le build. hatch_build.py refuse une wheel sans bundle →
       # un build rouge vaut déjà test de l'UI.

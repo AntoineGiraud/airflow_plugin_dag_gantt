@@ -8,12 +8,12 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import * as Chakra from '@chakra-ui/react';
 import * as Router from 'react-router-dom';
+import { BIN_OPTIONS, autoBinMs, barHref, binLabel, bucketize, packLanes, parseBin } from './aggregation';
 
 const { Box, Flex, HStack, VStack, Text, Input, Button, Badge, Spacer } = Chakra;
 // Guard : si un composant Chakra manque dans la version hotee, on degrade proprement.
-const HasTooltip = Boolean(Chakra.TooltipRoot && Chakra.TooltipTrigger && Chakra.TooltipContent);
 const HasNativeSelect = Boolean(Chakra.NativeSelectRoot && Chakra.NativeSelectField);
-const RLink = Router.Link;
+const HasNavigate = Boolean(Router && typeof Router.useNavigate === 'function');
 
 const API_URL = '/dag-gantt-plugin/api/runs';
 
@@ -35,6 +35,7 @@ const BAR_HEIGHT = 14;
 const BAR_GAP = 3;
 const ROW_HEIGHT = BAR_HEIGHT + BAR_GAP; // pas vertical d'une lane (px)
 const MAX_LANES = 6;
+const NO_ITEMS = []; // array partagé : garde l'identity stable pour React.memo
 const REFRESH_MS = 30000; // rafraichissement leger (barres running + donnees)
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -58,11 +59,15 @@ const shiftDate = (iso, days) => {
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 };
 
-const fmtTime = (iso) =>
-  iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
+const fmtTimeMs = (ms) =>
+  Number.isFinite(ms)
+    ? new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : '—';
+
+const fmtTime = (iso) => fmtTimeMs(Date.parse(iso));
 
 const fmtDuration = (ms) => {
-  if (ms == null || ms < 0) return '—';
+  if (!Number.isFinite(ms) || ms < 0) return '—';
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -175,143 +180,214 @@ const primaryTagOf = (tags, stages, tagRank) => {
 };
 
 /* ------------------------------------------------------------------ */
-/* Barre d'un run                                                      */
+/* Barre : run isolé ou bucket de runs (plus de lien / tooltip unitaire) */
 /* ------------------------------------------------------------------ */
 
-const GanttBar = ({ run, windowStart, windowSpan, now, chartWidth }) => {
-  const startMs = Date.parse(run.start);
-  const endMs = run.end ? Date.parse(run.end) : now; // running / queued -> etire jusqu'a maintenant
+const MIN_COUNT_PX = 24; // place pour « 12× »
+const MIN_DUR_PX = 55; // place pour « 4m 12s »
+
+// `barHref` (lien d'une barre) et `packLanes` (hauteur de ligne) vivent dans
+// `aggregation.js` : ce sont des fonctions pures, couvertes par le test node.
+
+
+const Bar = React.memo(function Bar({ item, windowStart, windowSpan, chartWidth }) {
+  const startMs = item.startMs == null ? windowStart : item.startMs;
+  const endMs = item.endMs == null || item.endMs < startMs ? startMs : item.endMs;
   const left = Math.max(0, ((startMs - windowStart) / windowSpan) * 100);
   const right = Math.min(100, ((endMs - windowStart) / windowSpan) * 100);
   const width = Math.max(right - left, 0.35);
-  const color = STATE_COLORS[run.state] || DEFAULT_COLOR;
-  const duration = endMs - startMs;
-  // Label duree dans la barre si elle est assez large (~55 px) ; sans mesure
-  // (ResizeObserver absent), seuil approximatif en % de la largeur totale.
+  // Label dans la barre sans mesure (ResizeObserver absent) : seuil approximatif.
   const widthPx = chartWidth ? (width / 100) * chartWidth : null;
-  const showDuration = widthPx != null ? widthPx >= 55 : width >= 8;
+  const fits = (px) => (widthPx != null ? widthPx >= px : width >= 8);
 
-  const gridUrl = `/dags/${encodeURIComponent(run.dag_id)}/runs/${encodeURIComponent(run.run_id)}`;
+  const parts = [];
+  if (item.count > 1 && fits(MIN_COUNT_PX)) parts.push(`${item.count}×`);
+  if (fits(MIN_DUR_PX)) parts.push(fmtDuration(endMs - startMs));
 
-  const tooltipText =
-    `${run.run_id}\n` +
-    `${fmtTime(run.start)} → ${run.end ? fmtTime(run.end) : '(en cours)'} · ${fmtDuration(duration)}` +
-    (run.tags.length ? `\ntags: ${run.tags.join(', ')}` : '');
+  const common = {
+    bg: STATE_COLORS[item.state] || DEFAULT_COLOR,
+    color: 'white',
+    borderRadius: '3px',
+    fontSize: '10px',
+    lineHeight: `${BAR_HEIGHT}px`,
+    px: 1,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    opacity: item.state && item.state !== 'success' ? 1 : 0.9,
+    border: item.running ? '1px solid' : 'none', // bucket contenant un run en cours
+    borderColor: 'running.solid',
+  };
+  const label = `${item.running ? '▶' : ''}${parts.length ? `${item.running ? ' ' : ''}${parts.join(' · ')}` : ''}`;
 
-  const bar = (
-    <Box
-      title={HasTooltip ? undefined : tooltipText} // fallback si pas de Tooltip hote
-      bg={color}
-      color="white"
-      height={`${BAR_HEIGHT}px`}
-      borderRadius="3px"
-      position="absolute"
-      top={`${(run._lane || 0) * (BAR_HEIGHT + BAR_GAP)}px`}
-      left={`${left}%`}
-      width={`${width}%`}
-      fontSize="10px"
-      lineHeight={`${BAR_HEIGHT}px`}
-      px={1}
-      whiteSpace="nowrap"
-      overflow="hidden"
-      cursor="pointer"
-      opacity={run.state && run.state !== 'success' ? 1 : 0.9}
-      border={run.state === 'running' ? '1px solid' : 'none'}
-      borderColor="running.solid"
-    >
-      {run.state === 'running' ? '▶' : ''}
-      {showDuration ? `${run.state === 'running' ? ' ' : ''}${fmtDuration(duration)}` : ''}
-    </Box>
-  );
+  // Seule une barre en échec est un lien : le Gantt reste une vue d'ensemble, pas
+  // un lanceur. Le détail de n'importe quelle barre passe par le tooltip partagé.
+  const failed = item.state === 'failed';
+  const style = {
+    position: 'absolute',
+    top: `${(item.lane || 0) * ROW_HEIGHT}px`,
+    left: `${left}%`,
+    width: `${width}%`,
+    height: `${BAR_HEIGHT}px`,
+    display: failed ? 'block' : undefined,
+  };
 
-  const linked = RLink ? (
-    <RLink to={gridUrl} title={tooltipText}>
-      {bar}
-    </RLink>
-  ) : (
-    <a href={gridUrl} title={tooltipText}>{bar}</a>
-  );
-
-  if (!HasTooltip) return linked;
-
+  if (!failed) {
+    return (
+      <Box
+        data-gk={item.key}
+        position="absolute"
+        top={style.top}
+        left={style.left}
+        width={style.width}
+        height={`${BAR_HEIGHT}px`}
+        cursor="default"
+        {...common}
+      >
+        {label}
+      </Box>
+    );
+  }
   return (
-    <Chakra.TooltipRoot positioning={{ placement: 'top' }} openDelay={100}>
-      <Chakra.TooltipTrigger asChild>{linked}</Chakra.TooltipTrigger>
-      <Chakra.TooltipContent fontSize="12px" whiteSpace="pre-line">
-        {tooltipText}
-      </Chakra.TooltipContent>
-    </Chakra.TooltipRoot>
+    <a
+      href={barHref(item)}
+      data-nav=""
+      data-gk={item.key}
+      className="gk-nav"
+      title={item.kind === 'bucket' ? `${item.count} runs en échec — ouvrir la liste bornée` : 'Ouvrir ce run'}
+      style={style}
+    >
+      <Box width="100%" height="100%" cursor="pointer" {...common}>
+        {label}
+      </Box>
+    </a>
+  );
+});
+
+/* ---------------------- Tooltip partagé de tout le Gantt ---------------------- */
+
+const TIP_DELAY_MS = 100; // même ressenti que l'ancien openDelay des TooltipRoot
+const TIP_MAX_WIDTH = 380;
+const TIP_RUN_LINES = 5; // lignes de runs détaillées dans le tooltip d'un bucket
+
+const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+/** Texte du tooltip, construit **à la demande** (plus de concaténation de ~1270 chaînes au render). */
+const tipTextFor = (item) => {
+  if (!item) return '';
+  if (item.kind !== 'bucket') {
+    const run = item.run;
+    const tags = run.tags && run.tags.length ? `\ntags: ${run.tags.join(', ')}` : '';
+    return (
+      `${run.run_id}\n` +
+      `${fmtTime(run.start)} → ${run.end ? fmtTime(run.end) : '(en cours)'} · ` +
+      `${fmtDuration(item.endMs - item.startMs)}${tags}`
+    );
+  }
+  const repartition = Object.keys(item.states)
+    .sort((a, b) => item.states[b] - item.states[a] || a.localeCompare(b))
+    .map((state) => `${state} ${item.states[state]}`)
+    .join(' · ');
+  const lines = item.runs
+    .slice(0, TIP_RUN_LINES)
+    .map((run) => `  ${clip(run.run_id, 58)}  ${run.state || 'none'}`);
+  const rest = item.count - lines.length;
+  return [
+    `${item.dagId} · ${item.count} runs · ${fmtTimeMs(item.startMs)} → ` +
+      `${item.open ? '(en cours)' : fmtTimeMs(item.endMs)} · ${fmtDuration(item.endMs - item.startMs)}`,
+    repartition,
+    ...lines,
+    rest > 0 ? `  … +${rest} autres` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+};
+
+const HoverTip = ({ tip }) => {
+  if (!tip) return null;
+  const vw = typeof window === 'undefined' ? 1280 : window.innerWidth;
+  const half = TIP_MAX_WIDTH / 2;
+  const left = Math.min(Math.max(tip.x, half + 4), Math.max(vw - half - 4, half + 4));
+  const above = tip.top > 170; // sinon on passe sous la barre
+  return (
+    <Box
+      data-tip="" /* marqueur du tooltip unique (tests / inspection devtools) */
+      position="fixed"
+      left={`${left}px`}
+      top={`${(above ? tip.top : tip.bottom) + (above ? -8 : 8)}px`}
+      transform={above ? 'translate(-50%, -100%)' : 'translate(-50%, 0)'}
+      maxW={`${TIP_MAX_WIDTH}px`}
+      zIndex={1200}
+      bg="bg.panel"
+      borderWidth="1px"
+      borderColor="border.subtle"
+      borderRadius="md"
+      px={2}
+      py={1}
+      fontSize="11px"
+      lineHeight="1.4"
+      whiteSpace="pre-line"
+      pointerEvents="none"
+      boxShadow="md"
+    >
+      {tip.text}
+    </Box>
   );
 };
 
 /* ------------------------------------------------------------------ */
-/* Ligne d'un DAG (lane packing simple)                                */
+/* Ligne d'un DAG (lane packing sur les items)                         */
 /* ------------------------------------------------------------------ */
 
-const DagRow = ({ dagId, runs, tags, primaryTag, groupTag, windowStart, windowSpan, now, chartWidth }) => {
-  // lanes gredy : chaque run dans la premiere lane libre
-  const laneEnds = [];
-  runs.forEach((run) => {
-    const endMs = run.end ? Date.parse(run.end) : now;
-    let lane = laneEnds.findIndex((end) => end <= Date.parse(run.start));
-    if (lane === -1) {
-      if (laneEnds.length < MAX_LANES) {
-        laneEnds.push(endMs);
-        lane = laneEnds.length - 1;
-      } else {
-        lane = MAX_LANES - 1; // surcharge : on empile dans la derniere
-      }
-    } else {
-      laneEnds[lane] = endMs;
-    }
-    run._lane = lane;
-  });
-  const height = Math.max(laneEnds.length, 1) * ROW_HEIGHT + 2;
+const DagRow = React.memo(function DagRow({
+  dagId,
+  items,
+  runCount,
+  tags,
+  primaryTag,
+  groupTag,
+  windowStart,
+  windowSpan,
+  chartWidth,
+}) {
+  const { packed, lanes } = useMemo(() => packLanes(items, MAX_LANES), [items]);
+  const height = lanes * ROW_HEIGHT + 2;
 
-  // Badges : le tag principal est masque quand il est deja porte par l'en-tete de groupe ;
-  // sinon (liste plate) il reste en 1er badge. Max 2 badges au total, le reste en tooltip.
+  // Badges : le tag principal est masqué quand il est déjà porté par l'en-tête de groupe ;
+  // sinon (liste plate) il reste en 1er badge. Max 2 badges au total.
   const primaryShown = !(groupTag && groupTag.toLowerCase() === (primaryTag || '').toLowerCase());
   const secondary = tags.filter((t) => t !== primaryTag);
   const shownTags = (primaryShown && primaryTag ? [primaryTag] : []).concat(secondary).slice(0, 2);
 
   return (
     <Flex borderBottom="1px solid" borderColor="border.subtle" alignItems="center" py={0}>
-      <Box
-        width={`${LABEL_WIDTH}px`}
-        flexShrink={0}
-        px={2}
-        display="flex"
-        alignItems="center"
-        gap={1}
-        overflow="hidden"
-        height={`${height}px`}
-        title={`${dagId}\ntags: ${tags.join(', ') || '—'}`}
-      >
-        <Text fontSize="12px" fontWeight="semibold" truncate flexShrink={1} minW="150px">
-          {dagId}
-        </Text>
+      <Box width={`${LABEL_WIDTH}px`} flexShrink={0} px={2} display="flex" alignItems="center" gap={1} overflow="hidden" height={`${height}px`}>
+        {/* Le nom du DAG est le seul lien systématique de la ligne. */}
+        <a
+          href={`/dags/${encodeURIComponent(dagId)}`}
+          data-nav=""
+          className="gk-nav"
+          title={`${dagId}\ntags: ${tags.join(', ') || '—'}\n\nOuvrir ce DAG`}
+          style={{ minWidth: '150px', flexShrink: 1, display: 'block', overflow: 'hidden' }}
+        >
+          <Text fontSize="12px" fontWeight="semibold" truncate>
+            {dagId}
+          </Text>
+        </a>
         {shownTags.map((t) => (
           <Badge key={t} size="sm" colorPalette="purple" fontSize="9px" flexShrink={0}>{t}</Badge>
         ))}
-        {runs.length > 1 && (
-          <Badge size="sm" colorPalette="gray" fontSize="9px" flexShrink={0}>{runs.length}×{/* runs */ ''}</Badge>
+        {runCount > 1 && (
+          <Badge size="sm" colorPalette="gray" fontSize="9px" flexShrink={0}>{runCount}×{/* runs */ ''}</Badge>
         )}
       </Box>
       <Box position="relative" flex="1" height={`${height}px`}>
-        {runs.map((run) => (
-          <GanttBar
-            key={run.run_id}
-            run={run}
-            windowStart={windowStart}
-            windowSpan={windowSpan}
-            now={now}
-            chartWidth={chartWidth}
-          />
+        {packed.map((item) => (
+          <Bar key={item.key} item={item} windowStart={windowStart} windowSpan={windowSpan} chartWidth={chartWidth} />
         ))}
       </Box>
     </Flex>
   );
-};
+});
 
 /* ------------------------------------------------------------------ */
 /* En-tete d'un groupe de tags (clic = replier / déplier)              */
@@ -355,7 +431,7 @@ const GroupHeader = ({ group, collapsed, onToggle }) => (
 /* Widget principal                                                    */
 /* ------------------------------------------------------------------ */
 
-const Select = ({ value, onChange, options, placeholder }) => {
+const Select = ({ value, onChange, options, placeholder, title }) => {
   // options : chaines ou {value, label} ; placeholder absent = pas d'option vide.
   const norm = options.map((o) => (typeof o === 'string' ? { value: o, label: o } : o));
   const field = norm.map((o) => (
@@ -363,14 +439,14 @@ const Select = ({ value, onChange, options, placeholder }) => {
   ));
   if (!HasNativeSelect) {
     return (
-      <select value={value} onChange={(e) => onChange(e.target.value)} style={{ height: '32px' }}>
+      <select value={value} onChange={(e) => onChange(e.target.value)} title={title} style={{ height: '32px' }}>
         {placeholder && <option value="">{placeholder}</option>}
         {field}
       </select>
     );
   }
   return (
-    <Chakra.NativeSelectRoot size="sm" width="auto" minW="120px">
+    <Chakra.NativeSelectRoot size="sm" width="auto" minW="120px" title={title}>
       <Chakra.NativeSelectField placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)}>
         {field}
       </Chakra.NativeSelectField>
@@ -391,7 +467,7 @@ const DEFAULT_SORT = 'first';
 /* --------- Etat des filtres dans l'URL (partageable, pas d'historique) --------- */
 
 const HasSearchParams = Boolean(Router && typeof Router.useSearchParams === 'function');
-const URL_KEYS = ['date', 'q', 'tag', 'state', 'sort', 'zoom', 'group', 'stages', 'collapsed'];
+const URL_KEYS = ['date', 'q', 'tag', 'state', 'sort', 'zoom', 'group', 'stages', 'collapsed', 'bin'];
 
 const readInitialQuery = () => {
   try {
@@ -442,10 +518,14 @@ const DagGanttWidget = () => {
   const hydratedSort = initialQuery.get('sort');
 
   const [date, setDate] = useState(initialQuery.get('date') || todayLocal());
-  const [data, setData] = useState({ runs: [], truncated: false, count: 0 });
+  const [data, setData] = useState({ runs: [], count: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [now, setNow] = useState(Date.now());
+  // Temps « gelé » à la minute : alimente rows, la fenêtre et les barres. Un run qui
+  // tourne ne fait plus glisser la fenêtre ni re-render tout le Gantt toutes les 5 s ;
+  // seule la ligne « maintenant » (1 élément) garde le `now` brut.
+  const nowQ = Math.floor(now / 60000) * 60000;
 
   // Filtres client-side
   const [nameFilter, setNameFilter] = useState(initialQuery.get('q') || '');
@@ -457,6 +537,13 @@ const DagGanttWidget = () => {
   const [sortKey, setSortKey] = useState(
     SORT_OPTIONS.some((o) => o.value === hydratedSort) ? hydratedSort : DEFAULT_SORT
   );
+
+  // Agrégation des runs en buckets : 'auto' (granularité selon la fenêtre, 30 min max),
+  // 'off' (une barre par run) ou une tranche fixe ('1m'..'60m').
+  const [bin, setBin] = useState(() => {
+    const raw = initialQuery.get('bin');
+    return BIN_OPTIONS.some((o) => o.value === raw) ? raw : 'auto';
+  });
 
   // Groupement par tag principal (défaut : activé, ?group=0 = liste plate)
   const [grouped, setGrouped] = useState(initialQuery.get('group') !== '0');
@@ -477,6 +564,7 @@ const DagGanttWidget = () => {
     state: stateFilter.join(','),
     sort: sortKey !== DEFAULT_SORT ? sortKey : '',
     zoom: zoomAuto ? '' : 'day',
+    bin: bin !== 'auto' ? bin : '', // défaut = auto -> URL propre
     group: grouped ? '' : '0', // défaut : groupé -> rien dans l'URL
     stages: stagesText.trim(),
     collapsed: Array.from(collapsed).join(','),
@@ -513,11 +601,16 @@ const DagGanttWidget = () => {
     };
   }, [fetchData]);
 
-  // Tick leger pour etirer les barres running jusqu'a l'instant T
+  // Tick leger pour etirer les barres running jusqu'a l'instant T : court seulement
+  // s'il y a du mouvement (sinon 60 s, de toute façon rien ne bouge à la minute près).
+  const hasLive = useMemo(
+    () => data.runs.some((r) => r.state === 'running' || r.state === 'queued'),
+    [data.runs]
+  );
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 5000);
+    const timer = setInterval(() => setNow(Date.now()), hasLive ? 5000 : 60000);
     return () => clearInterval(timer);
-  }, []);
+  }, [hasLive]);
 
   const allTags = useMemo(
     () => Array.from(new Set(data.runs.flatMap((r) => r.tags))).sort(),
@@ -561,10 +654,14 @@ const DagGanttWidget = () => {
     const list = Array.from(byDag.entries()).map(([dagId, runs]) => {
       runs.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
       const lastRun = runs[runs.length - 1];
-      const lastEnd = Date.parse(lastRun.end) || Date.parse(lastRun.start) || now;
-      const maxDuration = Math.max(
-        ...runs.map((r) => (r.end ? Date.parse(r.end) : now) - Date.parse(r.start))
-      );
+      const lastEnd = Date.parse(lastRun.end) || Date.parse(lastRun.start) || nowQ;
+      // Reduce et non Math.max(...runs) : sans plafond API, une journée peut porter
+      // assez de runs pour faire exploser la pile avec un spread.
+      let maxDuration = 0;
+      runs.forEach((r) => {
+        const duration = (r.end ? Date.parse(r.end) : nowQ) - Date.parse(r.start);
+        if (Number.isFinite(duration) && duration > maxDuration) maxDuration = duration;
+      });
       return {
         dagId,
         runs,
@@ -583,7 +680,7 @@ const DagGanttWidget = () => {
       name: (a, b) => a.dagId.localeCompare(b.dagId),
     };
     return list.sort(comparators[sortKey] || comparators[DEFAULT_SORT]);
-  }, [filtered, sortKey, now]);
+  }, [filtered, sortKey, nowQ]);
 
   // ---- Groupement par tag principal (le tri choisi s'applique à l'intérieur des groupes) ----
   const stages = useMemo(() => parseStages(stagesText), [stagesText]);
@@ -656,8 +753,8 @@ const DagGanttWidget = () => {
     return () => observer.disconnect();
   }, [hasRows]);
   const { windowStart, windowSpan, zoomed } = useMemo(
-    () => computeWindow(filtered, dayStart, zoomAuto, now),
-    [filtered, dayStart, zoomAuto, now]
+    () => computeWindow(filtered, dayStart, zoomAuto, nowQ),
+    [filtered, dayStart, zoomAuto, nowQ]
   );
 
   // Graduations adaptatives : palier choisi pour <= MAX_TICKS traits, aligne sur minuit local.
@@ -677,8 +774,95 @@ const DagGanttWidget = () => {
     return out;
   }, [dayStart, windowStart, windowSpan]);
 
+  // ---- Ce qu'on dessine : items (runs isolés + buckets) ----
+  // La granularité `auto` dépend de la fenêtre, elle-même calculée sur les runs bruts
+  // (jamais sur les buckets) : pas de boucle de rétroaction fenêtre <-> agrégation.
+  const binMs = useMemo(() => {
+    const fixed = parseBin(bin);
+    return fixed === undefined ? autoBinMs(windowSpan) : fixed;
+  }, [bin, windowSpan]);
+
+  const { itemsByDag, mergedCount } = useMemo(() => {
+    const map = new Map();
+    let runs = 0;
+    let items = 0;
+    rows.forEach((row) => {
+      const list = bucketize(row.runs, dayStart, binMs, nowQ);
+      map.set(row.dagId, list);
+      runs += row.count;
+      items += list.length;
+    });
+    return { itemsByDag: map, mergedCount: runs - items };
+  }, [rows, dayStart, binMs, nowQ]);
+
+  // Clé -> item : le texte du tooltip n'est construit que pour la barre survolée.
+  const tipItems = useMemo(() => {
+    const map = new Map();
+    itemsByDag.forEach((list) => list.forEach((item) => map.set(item.key, item)));
+    return map;
+  }, [itemsByDag]);
+
+  // ---- Un seul tooltip et un seul gestionnaire de clic pour tout le Gantt ----
+  const [tip, setTip] = useState(null);
+  const tipItemsRef = useRef(tipItems);
+  const hoverKeyRef = useRef(null);
+  const tipTimerRef = useRef(null);
+  useEffect(() => {
+    tipItemsRef.current = tipItems;
+    hoverKeyRef.current = null; // le contenu de la barre survolée a changé
+  }, [tipItems]);
+  useEffect(() => () => clearTimeout(tipTimerRef.current), []);
+
+  const onChartMouseOver = useCallback((event) => {
+    const target = event.target && event.target.closest ? event.target.closest('[data-gk]') : null;
+    const key = target ? target.dataset.gk : null;
+    if (key === hoverKeyRef.current) return; // rien à faire au mousemove : pas de re-render
+    hoverKeyRef.current = key;
+    clearTimeout(tipTimerRef.current);
+    setTip(null);
+    if (!key) return;
+    const text = tipTextFor(tipItemsRef.current.get(key));
+    if (!text) return;
+    const rect = target.getBoundingClientRect();
+    tipTimerRef.current = setTimeout(() => {
+      setTip({ x: rect.left + rect.width / 2, top: rect.top, bottom: rect.bottom, text });
+    }, TIP_DELAY_MS);
+  }, []);
+
+  const onChartMouseLeave = useCallback(() => {
+    hoverKeyRef.current = null;
+    clearTimeout(tipTimerRef.current);
+    setTip(null);
+  }, []);
+
+  // Navigation SPA pour les seuls liens qui restent (nom du DAG, barres en échec).
+  // Sans `useNavigate` sur l'hôte, on laisse le <a> faire son travail.
+  const navigate = HasNavigate ? Router.useNavigate() : null;
+  const onChartClick = useCallback(
+    (event) => {
+      if (!navigate || event.defaultPrevented || event.button !== 0) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; // nouvel onglet
+      const link = event.target && event.target.closest ? event.target.closest('[data-nav]') : null;
+      const href = link && link.getAttribute('href');
+      if (!href) return;
+      event.preventDefault();
+      navigate(href);
+    },
+    [navigate]
+  );
+
+  const binTitle =
+    bin === 'auto'
+      ? "Fusionne les runs d'un même DAG démarrés dans la même tranche ; granularité choisie d'après la fenêtre affichée, 30 min maximum. Rouge dès qu'un run du bucket a échoué."
+      : bin === 'off'
+        ? 'Une barre par run : aucune agrégation.'
+        : `Une barre par tranche de ${binLabel(parseBin(bin))} ; rouge dès qu'un run du bucket a échoué.`;
+
   return (
     <Box p={4} maxW="100%" overflowX="auto">
+      {/* Un seul <style> pour l'hover des rares liens (nom du DAG, barres en échec) : les
+          <a> natifs ne peuvent pas recevoir de prop Chakra `_hover`. */}
+      <style>{'.gk-nav{color:inherit;text-decoration:none;cursor:pointer}.gk-nav:hover{text-decoration:underline}'}</style>
       <VStack alignItems="stretch" gap={3}>
         <HStack gap={3} flexWrap="wrap">
           <Text fontSize="xl" fontWeight="bold">📊 Global Dag Gantt</Text>
@@ -727,6 +911,7 @@ const DagGanttWidget = () => {
             title="Ex. collecte, normalisation, raffinement, export — le tag principal (donc le groupe) est le premier de cette liste présent sur le DAG. Vide = détection automatique."
           />
           <Select value={sortKey} onChange={setSortKey} options={SORT_OPTIONS} />
+          <Select value={bin} onChange={setBin} options={BIN_OPTIONS} title={binTitle} />
           <Button
             size="sm"
             variant={grouped ? 'solid' : 'outline'}
@@ -752,12 +937,19 @@ const DagGanttWidget = () => {
             {zoomAuto ? '🔍 Zoom auto' : '🕐 Journée complète'}
           </Button>
           <Spacer />
-          <Text fontSize="sm" color="fg.muted" title={zoomed ? 'Fenêtre ajustée aux runs filtrés' : 'Journée complète'}>
+          <Text
+            fontSize="sm"
+            color="fg.muted"
+            title={
+              `${zoomed ? 'Fenêtre ajustée aux runs filtrés' : 'Journée complète'}` +
+              (mergedCount > 0 ? ` · ${mergedCount} runs fusionnés en buckets de ${binLabel(binMs)}` : '')
+            }
+          >
             {fmtClock(windowStart)} → {fmtClock(windowStart + windowSpan)} · {fmtDuration(windowSpan)}
+            {mergedCount > 0 ? ` · buckets ${binLabel(binMs)}` : ''}
           </Text>
-          <Text fontSize="sm" color="fg.muted">
+          <Text fontSize="sm" color="fg.muted" title="Runs de la journée correspondant aux filtres">
             {filtered.length} run{filtered.length > 1 ? 's' : ''}
-            {data.truncated ? ' (tronqué, limite API)' : ''}
           </Text>
         </HStack>
 
@@ -772,7 +964,15 @@ const DagGanttWidget = () => {
         ) : rows.length === 0 ? (
           <Text color="fg.muted">Aucun run pour cette journée / ces filtres.</Text>
         ) : (
-          <Box borderWidth="1px" borderColor="border.subtle" borderRadius="md" overflow="hidden">
+          <Box
+            borderWidth="1px"
+            borderColor="border.subtle"
+            borderRadius="md"
+            overflow="hidden"
+            onMouseOver={onChartMouseOver}
+            onMouseLeave={onChartMouseLeave}
+            onClick={onChartClick}
+          >
             {/* Echelle de temps */}
             <Flex borderBottomWidth="1px" borderColor="border.subtle" bg="bg.subtle">
               <Box width={`${LABEL_WIDTH}px`} flexShrink={0} px={2}>
@@ -822,13 +1022,13 @@ const DagGanttWidget = () => {
                         <DagRow
                           key={row.dagId}
                           dagId={row.dagId}
-                          runs={row.runs}
+                          items={itemsByDag.get(row.dagId) || NO_ITEMS}
+                          runCount={row.count}
                           tags={row.tags}
                           primaryTag={row.primaryTag}
                           groupTag={group.tag}
                           windowStart={windowStart}
                           windowSpan={windowSpan}
-                          now={now}
                           chartWidth={chartWidth}
                         />
                       ))}
@@ -838,17 +1038,20 @@ const DagGanttWidget = () => {
                   <DagRow
                     key={row.dagId}
                     dagId={row.dagId}
-                    runs={row.runs}
+                    items={itemsByDag.get(row.dagId) || NO_ITEMS}
+                    runCount={row.count}
                     tags={row.tags}
                     primaryTag={primaryTagOf(row.tags, stages, tagRank)}
                     windowStart={windowStart}
                     windowSpan={windowSpan}
-                    now={now}
                     chartWidth={chartWidth}
                   />
                 ))}
           </Box>
         )}
+
+        {/* Le tooltip de toutes les barres : un seul composant pour 1270 barres. */}
+        <HoverTip tip={tip} />
 
         {/* Legende = filtre multi-etats cliquable (rien selectionne = tous les etats) */}
         <HStack gap={4} flexWrap="wrap">

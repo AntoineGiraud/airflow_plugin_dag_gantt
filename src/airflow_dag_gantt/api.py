@@ -21,9 +21,6 @@ from . import BUNDLE_NAME, URL_PREFIX, __version__
 #: qui traîne à côté de `plugins/dag_gantt_plugin.py`.
 BUNDLE_PATH = Path(__file__).parent / "static" / BUNDLE_NAME
 
-# Garde-fou : nombre max de runs renvoyés pour une journée.
-RUN_LIMIT = 2000
-
 app = FastAPI(title="Dag Gantt Plugin", version=__version__)
 
 
@@ -53,7 +50,12 @@ def _iso(value: datetime | None) -> str | None:
 def get_runs(
     date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ) -> dict[str, Any]:
-    """Tous les DagRun démarrés pendant la journée demandée (UTC), avec leurs tags."""
+    """**Tous** les DagRun démarrés pendant la journée demandée (UTC), avec leurs tags.
+
+    Aucun plafond : la vue est une vue d'ensemble de la journée, un run masqué est une
+    information perdue. La densité est absorbée par l'agrégation côté front
+    (`js/src/aggregation.js`), pas par une troncature côté base.
+    """
     day_start, day_end = _day_window(date)
     started_at = func.coalesce(DagRun.start_date, DagRun.run_after)
 
@@ -70,10 +72,7 @@ def get_runs(
             .join(DagModel, DagModel.dag_id == DagRun.dag_id)
             .where(started_at >= day_start, started_at < day_end)
             .order_by(started_at)
-            .limit(RUN_LIMIT + 1)
         ).all()
-        truncated = len(rows) > RUN_LIMIT
-        rows = rows[:RUN_LIMIT]
 
         dag_ids = {row.dag_id for row in rows}
         tags_by_dag: dict[str, list[str]] = {}
@@ -100,7 +99,6 @@ def get_runs(
         "date": day_start.date().isoformat(),
         "window": {"start": _iso(day_start), "end": _iso(day_end)},
         "count": len(runs),
-        "truncated": truncated,
         "runs": runs,
     }
 

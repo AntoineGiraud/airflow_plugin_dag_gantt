@@ -10,10 +10,19 @@ Il se distribue comme un **vrai paquet pip**, découvert automatiquement par Air
 
 La ligne de temps **zoome automatiquement sur les runs filtrés** (minimum 3 h, graduations
 adaptatives, journée complète à la demande) ; la légende fait aussi office de **filtre multi-états**
-et l'état de la vue — date, recherche, tag, états, tri, zoom, groupement — voyage dans l'**URL** :
-un simple copier-coller partage exactement la même image de la plateforme.
+et l'état de la vue — date, recherche, tag, états, tri, zoom, groupement, **granularité
+d'agrégation** — voyage dans l'**URL** : un simple copier-coller partage exactement la même image de
+la plateforme.
 
-- **Une ligne par DAG**, une barre par run, positionnée et dimensionnée en temps réel ;
+- **Une ligne par DAG**, une barre par **tranche de temps**, positionnée et dimensionnée en temps
+  réel ;
+- **Runs agrégés par tranche** (auto selon la fenêtre, ou 1 min / 5 min / 15 min / 30 min / 1 h, ou
+  `off`) : les runs d'un même DAG démarrés dans la même tranche deviennent **une seule barre**
+  `N×`, **rouge dès qu'un run a échoué**, détail complet au survol (compte, bornes, durée,
+  répartition par état, 5 runs). Une journée à 1 000+ runs passe de ~1 300 barres et tooltips à
+  quelques centaines de barres et **un** tooltip — `?bin=off` rouvre la vue détaillée ;
+- **Journée complète, sans plafond API** : `/api/runs` renvoie **tous** les runs du jour, la densité
+  est absorbée par l'agrégation, pas par une troncature ;
 - **DAGs groupés par tag principal** (détection auto du tag le plus fréquent, ou liste d'étapes
   priorisées façon `collecte, normalisation, export`) — en-têtes repliables, lignes compactes ;
   `?group=0` revient à la liste plate ;
@@ -21,7 +30,9 @@ un simple copier-coller partage exactement la même image de la plateforme.
   d'instance inclus (mécanisme expliqué en §2.3) ;
 - **Filtres instantanés** (nom de DAG/run, tag, état) sans rappel serveur ;
 - **Runs en cours** : la barre s'étire jusqu'à l'instant T, vue rafraîchie toutes les 30 s ;
-- **Clic sur une barre** → ouverture de la page Grid du run.
+- **Vue d'ensemble, pas un lanceur** : seuls le **nom du DAG** (page du DAG) et les **barres en
+  échec** sont cliquables — un run isolé ouvre sa grille, un bucket rouge ouvre la liste des runs
+  `failed` du DAG bornée sur la tranche. Tout le reste se lit sur place, au survol.
 
 **En pratique :** menu **Parcourir → Dag Gantt**, choix de la date. C'est tout.
 
@@ -192,11 +203,17 @@ plans/                            plans d'architecture (dont les choix de distri
 ### 3.4 Tests
 
 ```bash
+cd js && bun install && bun run test && cd ..    # 27 tests du module d'agrégation, zéro dépendance
 ./build.sh
 uv venv .venv && uv pip install --python .venv/bin/python dist/*.whl pytest httpx
 AIRFLOW_HOME=$PWD/.airflow-home .venv/bin/airflow db migrate    # 2 s sur sqlite
-AIRFLOW_HOME=$PWD/.airflow-home .venv/bin/pytest -q -rs tests    # → 8 passed
+AIRFLOW_HOME=$PWD/.airflow-home .venv/bin/pytest -q -rs tests    # → 9 passed
 ```
+
+Côté JS, le test porte sur `js/src/aggregation.js` : c'est la seule partie du front testable sans
+navigateur (fonctions pures) — et c'est elle qui décide de ce qui est fusionné, de la couleur d'un
+bucket et du lien d'une barre. `node js/test/aggregation.test.mjs` fonctionne aussi (Node ≥ 23
+détecte l'ESM du `.js` et émet juste un avertissement de `package.json#type`).
 
 Trois pièges évités par ces quatre lignes : installer **la wheel** et non `-e .` (l'editable échoue
 sans `DAG_GANTT_JS_DIR` et, surtout, ne teste pas l'artefact livré) ; `httpx`, requis par

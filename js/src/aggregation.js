@@ -1,0 +1,246 @@
+/**
+ * Agrégation des runs en buckets — fonctions **pures**, sans React, testables
+ * hors navigateur : `node js/test/aggregation.test.mjs`.
+ *
+ * Règle : des runs d'un même DAG qui démarrent dans la même tranche (`binMs`)
+ * sont fusionnés en une seule barre. Les bornes du bucket sont les **vraies**
+ * dates des runs (pas les bords de la tranche) : la barre reste fidèle.
+ */
+
+const MINUTE_MS = 60000;
+const HOUR_MS = 60 * MINUTE_MS;
+
+/** Valeurs du select « Agrégation » (`off` = une barre par run, comme avant). */
+export const BIN_OPTIONS = [
+  { value: 'auto', label: 'Agrégation : auto' },
+  { value: 'off', label: 'Agrégation : off' },
+  { value: '1m', label: 'Agrégation : 1 min' },
+  { value: '5m', label: 'Agrégation : 5 min' },
+  { value: '15m', label: 'Agrégation : 15 min' },
+  { value: '30m', label: 'Agrégation : 30 min' },
+  { value: '60m', label: 'Agrégation : 1 h' },
+];
+
+const BIN_MS = {
+  '1m': MINUTE_MS,
+  '5m': 5 * MINUTE_MS,
+  '15m': 15 * MINUTE_MS,
+  '30m': 30 * MINUTE_MS,
+  '60m': HOUR_MS,
+};
+
+const BIN_NAMES = {
+  [MINUTE_MS]: '1 min',
+  [5 * MINUTE_MS]: '5 min',
+  [15 * MINUTE_MS]: '15 min',
+  [30 * MINUTE_MS]: '30 min',
+  [HOUR_MS]: '1 h',
+};
+
+/** '5m' -> 300000 · 'off' -> null (désactivé) · 'auto'/inconnu -> undefined. */
+export const parseBin = (value) => {
+  if (value === 'off') return null;
+  return Object.prototype.hasOwnProperty.call(BIN_MS, value) ? BIN_MS[value] : undefined;
+};
+
+/**
+ * Granularité automatique selon la fenêtre affichée.
+ * Plafond assumé : **jamais plus de 30 min** (1 h reste un choix manuel).
+ */
+export const autoBinMs = (spanMs) => {
+  const hours = (Number.isFinite(spanMs) ? spanMs : 0) / HOUR_MS;
+  if (hours <= 3) return MINUTE_MS;
+  if (hours <= 6) return 5 * MINUTE_MS;
+  if (hours <= 12) return 15 * MINUTE_MS;
+  return 30 * MINUTE_MS;
+};
+
+/** Libellé lisible d'une granularité ('off' / '5 min' / '1 h'…). */
+export const binLabel = (binMs) => {
+  if (binMs == null) return 'off';
+  return BIN_NAMES[binMs] || `${Math.round(binMs / MINUTE_MS)} min`;
+};
+
+/** Du plus « grave » au plus tranquille : un bucket rouge dès un run échoué. */
+export const STATE_SEVERITY = ['failed', 'running', 'queued', 'planned', 'success'];
+
+/**
+ * État dominant d'un lot de runs.
+ * `states` : tableau d'états ou `{etat: nombre}` ; un état inconnu (ex. `none`)
+ * n'est jamais prioritaires -> on retombe sur le premier état rencontré.
+ */
+export const worstState = (states) => {
+  const names = Array.isArray(states) ? states : Object.keys(states || {});
+  for (const s of STATE_SEVERITY) {
+    if (names.includes(s)) return s;
+  }
+  return names[0] || null;
+};
+
+const parseMs = (iso) => {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
+};
+
+const uniqKey = (runs) => `${runs[0].dag_id}:${runs[0].run_id}`;
+
+/** Item « un run » : rendu identique à l'ancien GanttBar, avec ses bornes pré-calculées. */
+const runItem = (run, nowMs) => {
+  const startMs = parseMs(run.start);
+  const endMs = parseMs(run.end);
+  const state = run.state || 'none';
+  return {
+    kind: 'run',
+    key: `r:${run.dag_id}:${run.run_id}`,
+    dagId: run.dag_id,
+    state,
+    states: { [state]: 1 },
+    count: 1,
+    startMs,
+    // running / queued : étiré jusqu'à `nowMs` (le tick gelé à la minute)
+    endMs: endMs != null && startMs != null && endMs > startMs ? endMs : nowMs,
+    open: endMs == null,
+    running: run.state === 'running',
+    run,
+    runs: [run],
+  };
+};
+
+/** Item « bucket » : ≥ 2 runs du même DAG démarrés dans la même tranche. */
+const bucketItem = (runs, binKey, nowMs) => {
+  let startMs = null;
+  let lastEndMs = null;
+  let open = false;
+  const states = {};
+  runs.forEach((run) => {
+    const s = parseMs(run.start);
+    const e = parseMs(run.end);
+    if (s != null) startMs = startMs == null ? s : Math.min(startMs, s);
+    if (e != null) lastEndMs = lastEndMs == null ? e : Math.max(lastEndMs, e);
+    else open = true;
+    const state = run.state || 'none';
+    states[state] = (states[state] || 0) + 1;
+  });
+  // Un run non terminé étire la barre jusqu'à maintenant.
+  const endMs = Math.max(lastEndMs == null ? 0 : lastEndMs, open ? nowMs : 0);
+  return {
+    kind: 'bucket',
+    key: `b:${uniqKey(runs)}:${binKey}:${startMs}`,
+    dagId: runs[0].dag_id,
+    state: worstState(states),
+    states,
+    count: runs.length,
+    startMs,
+    endMs,
+    open,
+    running: runs.some((r) => r.state === 'running'),
+    run: runs[0],
+    runs,
+  };
+};
+
+/**
+ * Lane packing glouton : chaque item dans la premiere lane libre. Le lane vit dans
+ * l'item (plus de mutation `run._lane` sur les donnees de l'API) et un item dont le
+ * lane ne bouge pas garde son identite -> `React.memo` sur la barre reste efficace.
+ *
+ * Retourne `{ packed, lanes }` : `lanes` porte la hauteur de la ligne.
+ */
+export const packLanes = (items, maxLanes = 6) => {
+  const laneEnds = [];
+  const packed = (items || []).map((item) => {
+    const startMs = item.startMs == null ? -Infinity : item.startMs;
+    const endMs = item.endMs == null ? startMs : item.endMs;
+    let lane = laneEnds.findIndex((end) => end <= startMs);
+    if (lane === -1) {
+      if (laneEnds.length < maxLanes) {
+        laneEnds.push(endMs);
+        lane = laneEnds.length - 1;
+      } else {
+        lane = Math.max(maxLanes - 1, 0); // surcharge : on empile dans la derniere
+      }
+    } else {
+      laneEnds[lane] = endMs;
+    }
+    return item.lane === lane ? item : { ...item, lane };
+  });
+  return { packed, lanes: Math.max(laneEnds.length, 1) };
+};
+
+/**
+ * Lien d'une barre. `linkable` est laisse a l'appelant (seules les barres en echec
+ * sont des liens) : ici, la forme de l'URL.
+ *
+ * - run isolé -> grille du run `/dags/<dag_id>/runs/<run_id>` ;
+ * - bucket -> liste des runs du DAG bornée sur la tranche (+ état). Clés vérifiées
+ *   dans le bundle UI de l'hôte (Airflow 3.3.2+astro) : l'enum `SearchParamsKeys`
+ *   expose `RUN_AFTER_GTE` / `RUN_AFTER_LTE` / `STATE` — donc `state`, **pas**
+ *   `run_state` (dont l'équivalent réel est `dag_run_state`, filtre de la liste des
+ *   DAGs). Une clé inconnue est ignorée par l'hôte : le lien ouvre alors la liste
+ *   du DAG. Caveat : la page native filtre sur `run_after` alors que le Gantt dessine
+ *   d'après `start_date` (bornes un peu larges) et pagine 10 runs par défaut.
+ */
+export const barHref = (item) => {
+  const listUrl = `/dags/${encodeURIComponent(item.dagId)}/runs`;
+  if (item.kind !== 'bucket') {
+    return `${listUrl}/${encodeURIComponent(item.run.run_id)}`;
+  }
+  const params = new URLSearchParams();
+  if (item.startMs != null) params.set('run_after_gte', new Date(item.startMs).toISOString());
+  if (item.endMs != null) params.set('run_after_lte', new Date(item.endMs).toISOString());
+  const states = item.states || {};
+  if (states.failed) {
+    // Cas réel d'une barre cliquable : on mène l'utilisateur aux runs en échec.
+    params.set('state', 'failed');
+  } else {
+    const only = Object.keys(states);
+    if (only.length === 1 && only[0] !== 'none') params.set('state', only[0]);
+  }
+  const query = params.toString();
+  return query ? `${listUrl}?${query}` : listUrl;
+};
+
+/**
+ * Fuseau : `runs` (triés par start, `rows` les trie déjà) -> items à dessiner.
+ *
+ * - `binMs == null` (agrégation `off`) -> un item par run, comportement historique.
+ * - tranche = `floor((start - dayStart) / binMs)` ; un groupe d'**un** run reste un
+ *   item `run` (donc un lien direct vers la grille du run).
+ * - un run sans start parsable n'est **jamais** fusionné.
+ *
+ * `computeWindow` consomme toujours les runs bruts, jamais ces items : pas de
+ * boucle de rétroaction fenêtre <-> granularité.
+ */
+export const bucketize = (runs, dayStart, binMs, nowMs) => {
+  const list = runs || [];
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  if (binMs == null || binMs <= 0) return list.map((run) => runItem(run, now));
+
+  const origin = Number.isFinite(dayStart) ? dayStart : 0;
+  const out = [];
+  let group = [];
+  let groupKey = null;
+
+  const flush = () => {
+    if (group.length === 1) out.push(runItem(group[0], now));
+    else if (group.length > 1) out.push(bucketItem(group, groupKey, now));
+    group = [];
+    groupKey = null;
+  };
+
+  list.forEach((run) => {
+    const startMs = parseMs(run.start);
+    if (startMs == null) {
+      out.push(runItem(run, now)); // jamais fusionné
+      return;
+    }
+    // Cle = tranche + DAG : `bucketize` est appele par ligne (donc par DAG), mais
+    // on ne fusionne jamais deux DAGs, meme si l'appelant melange les runs.
+    const key = `${run.dag_id}|${Math.floor((startMs - origin) / binMs)}`;
+    if (group.length && key !== groupKey) flush();
+    groupKey = key;
+    group.push(run);
+  });
+  flush();
+  return out;
+};

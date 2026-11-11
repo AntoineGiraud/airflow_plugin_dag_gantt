@@ -6,7 +6,7 @@ de packaging : aucun import d'`airflow` ici.
 
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 # Un seul nom partout (plugin.py ↔ api.py ↔ js/src/DagGanttWidget.jsx).
 # Les décorateurs FastAPI sont évalués à l'import : pas de valeur lue dans

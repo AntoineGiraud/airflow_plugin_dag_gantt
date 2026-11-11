@@ -25,6 +25,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 JS_SOURCE = REPO_ROOT / "js" / "src" / "DagGanttWidget.jsx"
+API_SOURCE = REPO_ROOT / "src" / "airflow_dag_gantt" / "api.py"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 EXPECTED_NAME = "dag_gantt"
@@ -126,12 +127,27 @@ def test_api_runs_contract():
     ok = client.get("/api/runs", params={"date": "2026-11-09"})
     assert ok.status_code == 200, ok.text
     payload = ok.json()
-    assert set(payload) == {"date", "window", "count", "truncated", "runs"}
+    assert set(payload) == {"date", "window", "count", "runs"}
     assert payload["date"] == "2026-11-09"
     assert isinstance(payload["runs"], list)
 
     bad = client.get("/api/runs", params={"date": "11/09/2026"})
     assert bad.status_code == 422
+
+
+def test_api_has_no_daily_run_limit():
+    """La vue est une vue d'ensemble de la journée : `/api/runs` ne tronque plus rien.
+
+    Vérifié au niveau du source (même style que `test_url_contract_between_python_and_js`) :
+    aucun `.limit(` dans la requête, plus de `RUN_LIMIT`, plus de clé `truncated` dans le
+    payload. Un run masqué serait une information perdue ; la densité est absorbée par
+    l'agrégation côté front (`js/src/aggregation.js`).
+    """
+    source = API_SOURCE.read_text(encoding="utf-8")
+    assert ".limit(" not in source, "/api/runs ne doit plus plafonner la journée"
+    assert "RUN_LIMIT" not in source
+    assert '"truncated"' not in source
+    assert '"truncated"' not in JS_SOURCE.read_text(encoding="utf-8")
 
 
 def test_no_stale_gantt_file_in_plugins_folder():
