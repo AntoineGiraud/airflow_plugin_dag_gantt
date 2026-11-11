@@ -204,17 +204,26 @@ plans/                            plans d'architecture (dont les choix de distri
 ### 3.4 Tests
 
 ```bash
-cd js && bun install && bun run test && cd ..    # 27 tests du module d'agrégation, zéro dépendance
+cd js && bun install && bun run test && bun run test:dom && cd ..   # 27 + 18 tests JS, ~1 s
 ./build.sh
 uv venv .venv && uv pip install --python .venv/bin/python dist/*.whl pytest httpx
 AIRFLOW_HOME=$PWD/.airflow-home .venv/bin/airflow db migrate    # 2 s sur sqlite
 AIRFLOW_HOME=$PWD/.airflow-home .venv/bin/pytest -q -rs tests    # → 9 passed
 ```
 
-Côté JS, le test porte sur `js/src/aggregation.js` : c'est la seule partie du front testable sans
-navigateur (fonctions pures) — et c'est elle qui décide de ce qui est fusionné, de la couleur d'un
-bucket et du lien d'une barre. `node js/test/aggregation.test.mjs` fonctionne aussi (Node ≥ 23
-détecte l'ESM du `.js` et émet juste un avertissement de `package.json#type`).
+Côté JS, deux étages, parce qu'ils ne prouvent pas la même chose :
+
+- **`bun run test`** — `js/test/aggregation.test.mjs`, 27 assertions sur `js/src/aggregation.js`, la
+  seule partie du front testable sans navigateur (fonctions pures) : ce qui est fusionné, la couleur
+  d'un bucket, ses bornes, son lien. Zéro dépendance — `node js/test/aggregation.test.mjs` marche
+  aussi (Node ≥ 23 détecte l'ESM du `.js`, à un avertissement `package.json#type` près).
+- **`bun run test:dom`** — `js/test/render.test.mjs` monte **le vrai composant** dans un DOM
+  (happy-dom, seule dév-dependance ajoutée pour ça ; la wheel ne change pas) sur **1127 runs** et
+  compte ce qui est rendu : `bin=off` → 1127 barres, buckets 5 min → **170**, auto → **30**, un seul
+  tooltip, et des liens seulement sur le nom du DAG et les barres en échec. Les externals de
+  production (`@chakra-ui/react`, `react-router-dom`) y sont stubbés comme l'hôte les fournit, et le
+  test **échoue sur le moindre avertissement React** — une clé dupliquée ne doit pas survivre behind
+  un rendu « qui s'affiche quand même ».
 
 Trois pièges évités par ces quatre lignes : installer **la wheel** et non `-e .` (l'editable échoue
 sans `DAG_GANTT_JS_DIR` et, surtout, ne teste pas l'artefact livré) ; `httpx`, requis par
@@ -231,15 +240,16 @@ simples équivalents :
 | Hook | Commande | Étage |
 | --- | --- | --- |
 | `ruff-check`, `ruff-format` | `uvx ruff@0.16.1 check .` puis `format --check .` (job `lint` de la CI) | commit |
-| `js-tests` | `bun run --cwd js test` — les 27 tests du module d'agrégation | commit, si `js/` change |
+| `js-tests` | `bun run --cwd js test` — 27 tests du module d'agrégation | commit, si `js/` change |
+| `js-tests-dom` | `bun run --cwd js test:dom` — le composant monté sur 1127 runs dans un DOM | idem |
 | `js-lockfile` | `bun install --cwd js --frozen-lockfile` — `bun.lock` cohérent avec `package.json` | idem |
 | `js-bundle` | `bun run --cwd js build` — le bundle réellement livré | idem |
 | `wheel-build` | `./build.sh` — bundle **puis** wheel | `pre-push` + `manual` |
 
 ```bash
 prek install --hook-type pre-commit --hook-type pre-push   # une seule fois par clone
-prek run --all-files                          # ~2 s à chaud
-prek run --hook-stage manual --all-files      # + la wheel, ~5 s
+prek run --all-files                          # ~3 s à chaud, tout le JS compris
+prek run --hook-stage manual --all-files      # + la wheel, ~6 s
 ```
 
 Deux choix valent l'explication :

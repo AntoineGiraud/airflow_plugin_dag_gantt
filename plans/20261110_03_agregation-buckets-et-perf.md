@@ -228,13 +228,14 @@ Pas de nouvelle dépendance JS, pas de changement de schéma de payload autre qu
 
 ## Preuves déjà récoltées
 
-- **Agrégation mesurée sur une journée dense synthétique** (1126 runs d'un même DAG sur ~14 h, rendus
-  par le vrai composant React dans un DOM — harnais headless `bun` + happy-dom non commité) :
-  **1127 barres → 30 barres** en auto (fenêtre ~14 h → buckets 30 min), `?bin=5m` → **170 barres**,
-  **0 `TooltipRoot`** instancié et **1** tooltip partagé, liens = 1 par DAG + 1 par barre en échec
-  (`bin=off` : 1127 barres / 69 liens pour 67 runs `failed` + 2 noms de DAG), clic délégé sur une
-  barre en échec → `/dags/ALIVE/runs/<run_id>`, ctrl+clic **non** intercepté, nom du DAG →
-  `/dags/ALIVE`, bucket → `?run_after_gte=…&run_after_lte=…&state=failed`.
+- **Agrégation et rendu mesurés, en CI** : `js/test/render.test.mjs` (`bun run test:dom`, happy-dom)
+  monte **le vrai composant** sur 1127 runs d'une même journée (~14 h d'activité) : `bin=off` →
+  **1127 barres**, `bin=5m` → **170**, `auto` → **30**, **0 `TooltipRoot`** instancié et **1** tooltip
+  `[data-tip]`, liens = 1 par DAG + 1 par barre en échec (69 pour 67 `failed` + 2 noms), clic délégé
+  sur une barre en échec → `/dags/ALIVE/runs/<run_id>`, barre saine → **rien**, nom du DAG →
+  `/dags/ALIVE`, bucket → `?run_after_gte=…&run_after_lte=…&state=failed`, ctrl+clic **non** intercepté.
+  Le test échoue en outre sur **tout avertissement React** (il a déjà démasqué une clé `run_id`
+  dupliquée dans le jeu de données du test, et le `ref` posé sur le `Box` de l'hôte).
 - **Le bump de version a deux sources** : `pyproject.toml` (`version = `) ET
   `src/airflow_dag_gantt/__init__.py` ; seul le second nommait le wheel —
   `test_version_is_consistent_between_pyproject_and_package` l'a attrapé. Les deux à `0.6.0`.
@@ -249,4 +250,7 @@ Pas de nouvelle dépendance JS, pas de changement de schéma de payload autre qu
 - `node js/test/aggregation.test.mjs` : **27 tests** verts (le `.js` en ESM est chargé par détection de
   syntaxe Node ≥ 23 ; `--disable-warning=MODULE_TYPELESS_PACKAGE_JSON` pour une sortie propre).
   `bun run test` (script ajouté à `js/package.json`) fait la même chose sans avertissement.
-- `prek run --all-files` → 5 hooks verts en ~2 s ; `--hook-stage manual` (+ wheel) → ~5 s.
+- `prek run --all-files` → 6 hooks verts en ~3 s ; `--hook-stage manual` (+ wheel) → ~6 s.
+- Le harnais headless a été **promu en test commité** (choix de l'utilisateur) : `happy-dom` est une
+  devDependency (`js/package.json`, jamais dans la wheel — `hatch_build.py` ne copie que `js/dist`),
+  l'étape est en CI et en hook `pre-commit`.

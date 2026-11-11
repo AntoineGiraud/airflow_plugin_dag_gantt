@@ -47,6 +47,15 @@ repos:
         files: ^js/
         pass_filenames: false
 
+      - id: js-tests-dom
+        name: tests JS — rendu réel dans un DOM (happy-dom)
+        entry: bun run --cwd js test:dom
+        language: system
+        files: ^js/
+        pass_filenames: false
+        # ~1 s mesurée : c'est le hook qui monte le vrai composant sur 1127 runs. Le garder
+        # au commit coûte moins cher qu'une régression de rendu découverte à la main.
+
       - id: js-lockfile
         name: verrou JS cohérent avec package.json
         entry: bun install --cwd js --frozen-lockfile

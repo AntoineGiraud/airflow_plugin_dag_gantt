@@ -85,11 +85,13 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Tests JS (module d'agrégation)
+      - name: Tests JS (agrégation + rendu dans un DOM)
         # `js/src/aggregation.js` est la seule partie du front testable sans navigateur
         # (fonctions pures) — et c'est justement elle qui décide de ce qui est fusionné,
-        # de la couleur d'un bucket et du lien d'une barre. Zéro dépendance : bun/node suffit.
-        run: (cd js && bun install && bun run test)
+        # de la couleur d'un bucket et du lien d'une barre. `render.test.mjs` va plus loin :
+        # il monte LE composant dans un DOM (happy-dom) sur 1127 runs et compte les barres,
+        # les liens et les tooltip réellement rendus. Les deux sont sans dépendance runtime.
+        run: (cd js && bun install && bun run test && bun run test:dom)
 
       # MÊME commande qu'en local : si la CI est verte et le local rouge (ou l'inverse), c'est
       # l'environnement qui ment, pas le build. hatch_build.py refuse une wheel sans bundle →
