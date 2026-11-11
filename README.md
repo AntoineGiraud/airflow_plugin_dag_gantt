@@ -131,6 +131,7 @@ Un faux plugin de 10 lignes suffirait : un composant, un `index.js` qui fait
 cp .env.example .env                 # nom d'instance + thème UI (.env n'est jamais versionné)
 ./build.sh                           # bundle JS + wheel dans dist/  (§4.2)
 astro dev start                      # l'image du projet installe la wheel (voir Dockerfile)
+prek install --hook-type pre-commit --hook-type pre-push   # optionnel : les contrôles automatiques (§3.5)
 
 astro dev run dags unpause gantt_demo_finance
 astro dev run dags unpause gantt_demo_quality
@@ -220,6 +221,41 @@ sans `DAG_GANTT_JS_DIR` et, surtout, ne teste pas l'artefact livré) ; `httpx`, 
 `fastapi.testclient`, sans quoi le test du contrat d'API **se tait** au lieu d'échouer ; une
 métadatabase, sans quoi `test_api_runs_contract` se skip (il sonde la vraie table `dag_run`) — d'où
 le `db migrate` et le `-rs` qui garde les skips visibles.
+
+### 3.5 `prek` : les mêmes contrôles qu'en CI, avant le commit et avant le push
+
+[`.pre-commit-config.yaml`](.pre-commit-config.yaml), lu par [prek](https://github.com/j178/prek)
+(drop-in compatible `pre-commit`), rejoue **les commandes de la CI et de `./build.sh`** — pas de
+simples équivalents :
+
+| Hook | Commande | Étage |
+| --- | --- | --- |
+| `ruff-check`, `ruff-format` | `uvx ruff@0.16.1 check .` puis `format --check .` (job `lint` de la CI) | commit |
+| `js-tests` | `bun run --cwd js test` — les 27 tests du module d'agrégation | commit, si `js/` change |
+| `js-lockfile` | `bun install --cwd js --frozen-lockfile` — `bun.lock` cohérent avec `package.json` | idem |
+| `js-bundle` | `bun run --cwd js build` — le bundle réellement livré | idem |
+| `wheel-build` | `./build.sh` — bundle **puis** wheel | `pre-push` + `manual` |
+
+```bash
+prek install --hook-type pre-commit --hook-type pre-push   # une seule fois par clone
+prek run --all-files                          # ~2 s à chaud
+prek run --hook-stage manual --all-files      # + la wheel, ~5 s
+```
+
+Deux choix valent l'explication :
+
+- **`./build.sh` à l'étage `pre-push`** : la loi de §3.2 — « après la dernière modif JS, le dernier
+  mot est au build, jamais au bundle poussé à chaud dans le conteneur » — devient mécanique. Le push
+  reste **entièrement manuel** : aucun hook ne pousse quoi que ce soit (jamais de `git push` ici), il
+  est seulement garanti qu'un artefact reconstruit précède. Sortie de secours assumée :
+  `git push --no-verify`.
+- **`repo: local` + `language: system`** : bun, uv et ruff sont déjà des prérequis du dépôt (§3.1) —
+  donc aucun hook amont à cloner, pas de redescente réseau à chaque commit. Et `pass_filenames: false`
+  partout : ces commandes portent sur le dépôt, passer les noms en argument tromperait webpack (qui
+  les prendrait pour des points d'entrée).
+
+La CI garde la main : les hooks accélèrent la boucle locale, ils ne **prouvent** rien — seule la wheel
+construite en CI est installée (§4.2).
 
 ---
 

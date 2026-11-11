@@ -1,0 +1,75 @@
+# Hooks locaux du dépôt — `prek` (gestionnaire de hooks Git, compatible pre-commit).
+#
+#   prek install                  # une seule fois par clone : pose les shims pre-commit + pre-push
+#   prek run --all-files          # valider tout le dépôt sans committer
+#   prek run --hook-stage manual  # + ./build.sh (la wheel complète, ~15 s)
+#
+# Règle de ce fichier : **relancer les MÊMES commandes que la CI**
+# (`.github/workflows/ci.yml`), pas des équivalents. Un hook qui n'existe pas en CI
+# dérive ; une commande CI absente du local surprend au moment du push.
+#
+# `repo: local` + `language: system` partout : bun et uv/uvx sont déjà exigés par
+# `./build.sh` et `./dev.sh`, et le but est de valider CE dépôt avec SES outils. Ouvrir
+# un environnement isolé pour réinstaller un toolchain ferait de chaque commit une
+# redescente réseau — et aucun hook amont (`pre-commit-hooks`, `ruff-pre-commit`)
+# n'apporte ici ce que ces commandes font déjà.
+#
+# `pass_filenames: false` partout : ce sont des commandes de **dépôt**, pas de fichier.
+# Passer les noms en argument est même faux ici — webpack les prendrait pour des points
+# d'entrée (`Module not found: js/src/index.js`) et `ruff .` les ignorerait.
+#
+# Étages : les hooks du dessous courent à chaque `git commit` (~2 s à chaud, le bundle
+# webpack pèse le reste). Le build de la wheel est hors du commit — il est à `pre-push`
+# (donc au `git push`, que l'utilisateur lance à la main) et en `manual` pour le forcer.
+repos:
+  - repo: local
+    hooks:
+      # --- Python : strictement les deux commandes du job `lint` de la CI ---
+      - id: ruff-check
+        name: ruff check (même version qu'en CI)
+        entry: uvx ruff@0.16.1 check .
+        language: system
+        always_run: true
+        pass_filenames: false
+
+      - id: ruff-format
+        name: ruff format --check
+        entry: uvx ruff@0.16.1 format --check .
+        language: system
+        always_run: true
+        pass_filenames: false
+
+      # --- JS : le module pur, le verrou, puis le bundle réellement livré ---
+      - id: js-tests
+        name: tests JS — module d'agrégation
+        entry: bun run --cwd js test
+        language: system
+        files: ^js/
+        pass_filenames: false
+
+      - id: js-lockfile
+        name: verrou JS cohérent avec package.json
+        entry: bun install --cwd js --frozen-lockfile
+        language: system
+        files: ^js/
+        pass_filenames: false
+
+      - id: js-bundle
+        name: bundle JS (webpack → js/dist)
+        entry: bun run --cwd js build
+        language: system
+        files: ^js/
+        pass_filenames: false
+
+      # --- Le build fonctionnel de bout en bout : bundle + wheel ---
+      # `./build.sh`, pas un sous-ensemble : `hatch_build.py` refuse une wheel sans
+      # bundle, donc ce hook prouve aussi le packaging. Placé à `pre-push`, il verrouille
+      # la loi de `./dev.sh` : après la dernière modif JS, le dernier mot est au build,
+      # jamais au bundle poussé à chaud dans le conteneur.
+      - id: wheel-build
+        name: build complet — ./build.sh (bundle + wheel)
+        entry: ./build.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push, manual]
