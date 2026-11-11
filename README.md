@@ -202,6 +202,18 @@ Dockerfile                        runtime Astro + pip install de la wheel LOCALE
 src/airflow_dag_gantt/{plugin,api}.py   DagGanttPlugin (entry point) + app FastAPI/SQLAlchemy
 src/airflow_dag_gantt/static/     le bundle, copié au build (gitignoré)
 js/                               sources React (webpack + bun, externals globalThis)
+  src/lib/                        fonctions pures, zéro React : temps/fenêtre (`time.js`),
+                                   agrégation (`aggregation.js`), tags & groupes (`grouping.js`),
+                                   dérivations (`view.js`), texte des infobulles (`tipText.js`),
+                                   réglages (`constants.js`) — et `host.js`, **le seul fichier
+                                   qui touche l'hôte** (Chakra + React Router de `globalThis`)
+  src/hooks/                      logistique : `useRuns` (fetch + refresh + horloge),
+                                   `useChartWidth` (ResizeObserver), `useHoverTip` (tooltip
+                                   délégué), `useUrlSync` (URL partageable), `useRibbon` (onglets)
+  src/components/                 rendu : `Bar`, `DagRow`, `GroupHeader`, `TimeScale`,
+                                   `StateLegend`, `HoverTip`, `Select`, `ControlRibbon`
+  src/DagGanttWidget.jsx          le **conteneur** : état de la vue, `useMemo` de dérivation,
+                                   assemblage (l'état vit là, les composants reçoivent des props)
 dags/gantt_demo.py                3 DAGs de démo (success / failed / running, tags)
 tests/test_plugin_packaging.py    entry point, URLs, bundle, contrat d'API, cohérence de version
 plans/                            plans d'architecture (dont les choix de distribution §5)
@@ -210,7 +222,7 @@ plans/                            plans d'architecture (dont les choix de distri
 ### 3.4 Tests
 
 ```bash
-cd js && bun install && bun run test && bun run test:dom && cd ..   # 27 + 18 tests JS, ~1 s
+cd js && bun install && bun run test && bun run test:dom && cd ..   # ~120 assertions JS, ~2 s
 ./build.sh
 uv venv .venv && uv pip install --python .venv/bin/python dist/*.whl pytest httpx
 AIRFLOW_HOME=$PWD/.airflow-home .venv/bin/airflow db migrate    # 2 s sur sqlite
@@ -219,10 +231,15 @@ AIRFLOW_HOME=$PWD/.airflow-home .venv/bin/pytest -q -rs tests    # → 9 passed
 
 Côté JS, deux étages, parce qu'ils ne prouvent pas la même chose :
 
-- **`bun run test`** — `js/test/aggregation.test.mjs`, 30 assertions sur `js/src/aggregation.js`, la
-  seule partie du front testable sans navigateur (fonctions pures) : ce qui est fusionné, la couleur
-  d'un bucket, ses bornes, son lien. Zéro dépendance — `node js/test/aggregation.test.mjs` marche
-  aussi (Node ≥ 23 détecte l'ESM du `.js`, à un avertissement `package.json#type` près).
+- **`bun run test`** — quatre fichiers sur `js/src/lib/`, la partie du front testable **sans
+  navigateur ni React** (zéro dépendance ; `node js/test/xxx.test.mjs` marche aussi, Node ≥ 23
+  détecte l'ESM du `.js`, à un avertissement `package.json#type` près) :
+  `aggregation.test.mjs` (30 assertions : ce qui est fusionné, la couleur d'un bucket, ses bornes,
+  son lien), `time.test.mjs` (formats, fenêtre auto/journée, plancher de 3 h, graduations alignées
+  sur les heures rondes), `grouping.test.mjs` (tag principal, étapes prioritaires, « autre » en
+  dernier), `view.test.mjs` (filtres, compteurs hors état, tri des lignes, granularité `auto`,
+  runs fusionnés dans la même tranche).
+- **`bun run test:dom`** — `js/test/render.test.mjs` monte **le vrai composant** dans un DOM
 - **`bun run test:dom`** — `js/test/render.test.mjs` monte **le vrai composant** dans un DOM
   (happy-dom, seule dév-dependance ajoutée pour ça ; la wheel ne change pas) sur **1127 runs** et
   compte ce qui est rendu : `bin=off` → 1127 barres, buckets 5 min → **170**, auto → **30**, un seul
@@ -246,7 +263,7 @@ simples équivalents :
 | Hook | Commande | Étage |
 | --- | --- | --- |
 | `ruff-check`, `ruff-format` | `uvx ruff@0.16.1 check .` puis `format --check .` (job `lint` de la CI) | commit |
-| `js-tests` | `bun run --cwd js test` — 27 tests du module d'agrégation | commit, si `js/` change |
+| `js-tests` | `bun run --cwd js test` — tests purs de `js/src/lib/` (agrégation, temps/fenêtre, tags/groupes, dérivations) | commit, si `js/` change |
 | `js-tests-dom` | `bun run --cwd js test:dom` — le composant monté sur 1127 runs dans un DOM | idem |
 | `js-lockfile` | `bun install --cwd js --frozen-lockfile` — `bun.lock` cohérent avec `package.json` | idem |
 | `js-bundle` | `bun run --cwd js build` — le bundle réellement livré | idem |

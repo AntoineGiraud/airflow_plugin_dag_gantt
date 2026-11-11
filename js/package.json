@@ -6,7 +6,7 @@
   "scripts": {
     "build": "webpack --mode production",
     "dev": "webpack --mode development --watch",
-    "test": "bun ./test/aggregation.test.mjs",
+    "test": "bun ./test/aggregation.test.mjs && bun ./test/time.test.mjs && bun ./test/grouping.test.mjs && bun ./test/view.test.mjs",
     "test:dom": "bun ./test/render.test.mjs"
   },
   "dependencies": {

@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-JS_SOURCE = REPO_ROOT / "js" / "src" / "DagGanttWidget.jsx"
+JS_SRC_DIR = REPO_ROOT / "js" / "src"
 API_SOURCE = REPO_ROOT / "src" / "airflow_dag_gantt" / "api.py"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
@@ -80,16 +80,26 @@ def test_bundle_is_shipped_inside_the_package():
     assert "globalThis" in content, "bundle must register itself on globalThis"
 
 
-@pytest.mark.skipif(not JS_SOURCE.is_file(), reason=f"JS source not available: {JS_SOURCE}")
+@pytest.mark.skipif(not JS_SRC_DIR.is_dir(), reason=f"JS sources not available: {JS_SRC_DIR}")
 def test_url_contract_between_python_and_js():
-    """`API_URL` du bundle == route montée par le plugin (aucune URL en dur qui dérive)."""
+    """`API_URL` du bundle == route montée par le plugin (aucune URL en dur qui dérive).
+
+    On balaie toute l'arborescence `js/src` plutôt qu'un fichier nommé : le composant est
+    découpé en modules, et ce qui compte est le **contrat** (une seule définition, qui tombe
+    sur la route montée), pas l'endroit où il est écrit.
+    """
     from airflow_dag_gantt import BUNDLE_NAME, PLUGIN_NAME, URL_PREFIX
     from airflow_dag_gantt.api import BUNDLE_PATH, app
 
-    js = JS_SOURCE.read_text(encoding="utf-8")
-    match = re.search(r"const API_URL\s*=\s*'([^']+)'", js)
-    assert match, "API_URL not found in js/src/DagGanttWidget.jsx"
-    assert match.group(1) == f"{URL_PREFIX}/api/runs"
+    found = [
+        (p, m.group(1))
+        for p in sorted(JS_SRC_DIR.rglob("*.js*"))
+        for m in [re.search(r"const API_URL\s*=\s*'([^']+)'", p.read_text(encoding="utf-8"))]
+        if m
+    ]
+    assert len(found) == 1, f"API_URL défini {len(found)} fois dans js/src : {found}"
+    where, url = found[0]
+    assert url == f"{URL_PREFIX}/api/runs", f"{where} : {url}"
 
     routes = {getattr(r, "path", None) for r in app.routes}
     assert "/api/runs" in routes
@@ -141,13 +151,15 @@ def test_api_has_no_daily_run_limit():
     Vérifié au niveau du source (même style que `test_url_contract_between_python_and_js`) :
     aucun `.limit(` dans la requête, plus de `RUN_LIMIT`, plus de clé `truncated` dans le
     payload. Un run masqué serait une information perdue ; la densité est absorbée par
-    l'agrégation côté front (`js/src/aggregation.js`).
+    l'agrégation côté front (`js/src/lib/aggregation.js`).
     """
     source = API_SOURCE.read_text(encoding="utf-8")
     assert ".limit(" not in source, "/api/runs ne doit plus plafonner la journée"
     assert "RUN_LIMIT" not in source
     assert '"truncated"' not in source
-    assert '"truncated"' not in JS_SOURCE.read_text(encoding="utf-8")
+    # côté front : balayé dans tout `js/src`, la vue étant découpée en modules
+    front = "\n".join(p.read_text(encoding="utf-8") for p in JS_SRC_DIR.rglob("*.js*"))
+    assert '"truncated"' not in front
 
 
 def test_no_stale_gantt_file_in_plugins_folder():

@@ -41,7 +41,7 @@ repos:
 
       # --- JS : le module pur, le verrou, puis le bundle réellement livré ---
       - id: js-tests
-        name: tests JS — module d'agrégation
+        name: tests JS — fonctions pures (agrégation, temps, tags, dérivations)
         entry: bun run --cwd js test
         language: system
         files: ^js/

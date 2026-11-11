@@ -16,7 +16,7 @@ import {
   binLabel,
   worstState,
   bucketize,
-} from '../src/aggregation.js';
+} from '../src/lib/aggregation.js';
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
