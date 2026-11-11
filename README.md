@@ -30,9 +30,10 @@ la plateforme.
   d'instance inclus (mécanisme expliqué en §2.3) ;
 - **Filtres instantanés** (nom de DAG/run, tag, état) sans rappel serveur ;
 - **Runs en cours** : la barre s'étire jusqu'à l'instant T, vue rafraîchie toutes les 30 s ;
-- **Vue d'ensemble, pas un lanceur** : seuls le **nom du DAG** (page du DAG) et les **barres en
-  échec** sont cliquables — un run isolé ouvre sa grille, un bucket rouge ouvre la liste des runs
-  `failed` du DAG bornée sur la tranche. Tout le reste se lit sur place, au survol.
+- **Vue d'ensemble, pas un lanceur** : seuls le **nom du DAG** (page du DAG) et les barres qui
+  servent à quelque chose sont cliquables — un **run unique** ouvre sa grille, un **bucket**
+  (ou une barre en échec) ouvre la liste des runs du DAG **filtrée sur la journée affichée**,
+  sans filtre d'état. Tout le reste se lit sur place, au survol.
 
 **En pratique :** menu **Parcourir → Dag Gantt**, choix de la date. C'est tout.
 
@@ -213,14 +214,14 @@ AIRFLOW_HOME=$PWD/.airflow-home .venv/bin/pytest -q -rs tests    # → 9 passed
 
 Côté JS, deux étages, parce qu'ils ne prouvent pas la même chose :
 
-- **`bun run test`** — `js/test/aggregation.test.mjs`, 27 assertions sur `js/src/aggregation.js`, la
+- **`bun run test`** — `js/test/aggregation.test.mjs`, 30 assertions sur `js/src/aggregation.js`, la
   seule partie du front testable sans navigateur (fonctions pures) : ce qui est fusionné, la couleur
   d'un bucket, ses bornes, son lien. Zéro dépendance — `node js/test/aggregation.test.mjs` marche
   aussi (Node ≥ 23 détecte l'ESM du `.js`, à un avertissement `package.json#type` près).
 - **`bun run test:dom`** — `js/test/render.test.mjs` monte **le vrai composant** dans un DOM
   (happy-dom, seule dév-dependance ajoutée pour ça ; la wheel ne change pas) sur **1127 runs** et
   compte ce qui est rendu : `bin=off` → 1127 barres, buckets 5 min → **170**, auto → **30**, un seul
-  tooltip, et des liens seulement sur le nom du DAG et les barres en échec. Les externals de
+  tooltip, et des liens sur le nom du DAG, les runs uniques et les buckets (journée, sans état). Les externals de
   production (`@chakra-ui/react`, `react-router-dom`) y sont stubbés comme l'hôte les fournit, et le
   test **échoue sur le moindre avertissement React** — une clé dupliquée ne doit pas survivre behind
   un rendu « qui s'affiche quand même ».

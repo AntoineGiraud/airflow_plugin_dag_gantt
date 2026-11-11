@@ -199,8 +199,10 @@ const hover = (el) => el.dispatchEvent(new win.MouseEvent('mouseover', { bubbles
 
 const off = await mount('?date=2026-11-10&bin=off');
 assert.equal(bars(off).length, runs.length, 'bin=off : une barre par run, comportement historique');
-// Liens = 1 par DAG (le nom) + 1 par barre en échec. Le DAG sain n'apporte que son nom.
-assert.equal(links(off).length, 2 + FAILED, `liens = noms de DAG + échecs (${FAILED} attendus)`);
+// Liens = 1 par DAG (le nom) + 1 **par barre cliquable**, et avec bin=off chaque run est
+// une barre => tout le monde est cliquable (run unique). Les échecs ne sont plus un cas
+// particulier : c'est `count === 1` qui ouvre le lien.
+assert.equal(links(off).length, 2 + runs.length, `liens = noms de DAG + runs uniques (${runs.length} attendus)`);
 
 const five = await mount('?date=2026-11-10&bin=5m');
 // 1126 runs * 44,8 s depuis 09:00 = 14 h pile -> 169 tranches de 5 min + la barre du DAG calme.
@@ -235,33 +237,46 @@ assert.equal(off.querySelectorAll('[data-tip]').length, 1, 'toujours un seul too
 
 /* ------------------------------- 3. liens et navigation déléguée ------------------------------- */
 
+// Avec bin=off, **tout** est cliquable (un run par barre) : le lien d'un run reste sa grille.
 globalThis.__navigated = [];
-const failedBar = off.querySelector('a[data-gk]');
-assert.ok(failedBar, 'une barre en échec doit être un lien');
-click(failedBar);
+const soloBar = off.querySelector('a[data-gk]');
+assert.ok(soloBar, 'un run isolé doit être un lien');
+click(soloBar);
 await tick();
 assert.equal(globalThis.__navigated.length, 1, 'le clic na pas été intercepté par le délégataire');
 assert.match(globalThis.__navigated[0], /^\/dags\/ALIVE\/runs\/manual__/, 'lien de run attendu');
-
-globalThis.__navigated = [];
-const healthyBar = [...off.querySelectorAll('[data-gk]')].find((b) => b.tagName !== 'A');
-click(healthyBar);
-await tick();
-assert.equal(globalThis.__navigated.length, 0, 'une barre saine ne navigue pas : vue, pas lanceur');
 
 globalThis.__navigated = [];
 click(off.querySelector('a[href="/dags/ALIVE"]'));
 await tick();
 assert.deepEqual(globalThis.__navigated, ['/dags/ALIVE'], 'le nom du DAG mène à sa page');
 
+// En buckets : une barre saine et multiple ne doit **pas** être un lien (vue, pas lanceur).
+globalThis.__navigated = [];
+const healthyBar = [...five.querySelectorAll('[data-gk]')].find((b) => b.tagName !== 'A');
+assert.ok(healthyBar, 'au moins un bucket multiple et sain ne doit pas être un lien');
+click(healthyBar);
+await tick();
+assert.equal(globalThis.__navigated.length, 0, 'un bucket sain ne navigue pas : vue, pas lanceur');
+
 globalThis.__navigated = [];
 const bucketLink = [...five.querySelectorAll('a[data-gk]')].find((a) => a.getAttribute('href').includes('?'));
-assert.ok(bucketLink, 'un bucket en échec doit être un lien');
+assert.ok(bucketLink, 'un bucket doit être un lien des qu il porte un echec ou un run unique');
 const url = new URL(`http://h${bucketLink.getAttribute('href')}`);
 assert.equal(url.pathname, '/dags/ALIVE/runs', 'un bucket mène à la liste des runs du DAG');
-assert.ok(url.searchParams.get('run_after_gte'), 'borne basse de tranche absente');
-assert.ok(url.searchParams.get('run_after_lte'), 'borne haute de tranche absente');
-assert.equal(url.searchParams.get('state'), 'failed', 'un bucket cliquable mène aux échecs');
+// Le filtre porte sur **la journée de la page**, plus sur la tranche ni sur un état.
+const HOUR = 3600_000;
+assert.equal(url.searchParams.get('run_after_gte'), new Date(DAY_START - HOUR).toISOString(), 'borne basse = minuit du jour');
+assert.equal(url.searchParams.get('run_after_lte'), new Date(DAY_START + 24 * HOUR + HOUR).toISOString(), 'borne haute = minuit du lendemain');
+assert.equal(url.searchParams.get('state'), null, 'plus aucun filtre d état dans le lien');
+// Toutes les barres **agrégées** du DAG partagent la même URL : une journée, un lien
+// (les barres d'un seul run pointent sur leur grille, et le DAG calme n'a qu'un run).
+const dayHrefs = new Set(
+  [...five.querySelectorAll('a[data-gk]')]
+    .map((a) => a.getAttribute('href'))
+    .filter((h) => h.includes('?'))
+);
+assert.equal(dayHrefs.size, 1, `une seule URL de journée, obtenues : ${[...dayHrefs].join(' | ')}`);
 
 globalThis.__navigated = [];
 click(bucketLink, { ctrlKey: true, button: 1 });

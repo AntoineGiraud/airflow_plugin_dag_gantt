@@ -19,6 +19,8 @@ import {
 } from '../src/aggregation.js';
 
 const MIN = 60 * 1000;
+const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
 const DAY_START = Date.parse('2026-11-10T00:00:00');
 const NOW = Date.parse('2026-11-10T18:00:00');
 const at = (hm, s = 0) => {
@@ -278,23 +280,48 @@ it('barHref : un run isolé pointe sur sa grille', () => {
   assert.equal(barHref(item), '/dags/ALIVE/runs/run_7');
 });
 
-it('barHref : un bucket pointe sur la liste bornée + state=failed', () => {
+it('barHref : un bucket pointe sur les runs du DAG **de la journee**, sans etat', () => {
   const runs = [
     run(1, at('14:01'), at('14:02'), 'success'),
     run(2, at('14:02'), at('14:09'), 'failed'),
   ];
   const [item] = bucketize(runs, DAY_START, 5 * MIN, NOW);
-  const url = new URL(`http://h${barHref(item)}`);
+  const url = new URL(`http://h${barHref(item, DAY_START)}`);
   assert.equal(url.pathname, '/dags/ALIVE/runs');
-  assert.equal(url.searchParams.get('run_after_gte'), iso(at('14:01')));
-  assert.equal(url.searchParams.get('run_after_lte'), iso(at('14:09')));
-  assert.equal(url.searchParams.get('state'), 'failed'); // mene aux runs en echec
+  // Journee complete : minuit local -> minuit local du lendemain (marge UTC comprise).
+  assert.equal(url.searchParams.get('run_after_gte'), iso(DAY_START - HOUR));
+  assert.equal(url.searchParams.get('run_after_lte'), iso(DAY_START + DAY + HOUR));
+  assert.equal(url.searchParams.get('state'), null); // plus aucun filtre d'etat
 });
 
-it('barHref : bucket monotone = etat unique, sans echec', () => {
+it('barHref : le filtre ne depend plus de la tranche ni des etats', () => {
+  const mk = (hm, state) => barHref(bucketize([run(1, at(hm), at(hm) + MIN, state)], DAY_START, 5 * MIN, NOW)[0], DAY_START);
+  const bucket = (hm) => barHref(bucketize([run(1, at(hm), at(hm) + MIN, 'success'), run(2, at(hm), at(hm) + 2 * MIN, 'success')], DAY_START, 5 * MIN, NOW)[0], DAY_START);
+  assert.equal(bucket('00:01'), bucket('23:00')); // une seule journee -> une seule URL
+  assert.match(mk('14:00'), /\/dags\/ALIVE\/runs\/run_1$/); // run unique : grille du run
+});
+
+it('barHref : sans dayStart, repli sur les bornes de la barre', () => {
+  const [item] = bucketize([run(1, at('14:01'), at('14:05'), 'success'), run(2, at('14:02'), at('14:06'), 'success')], DAY_START, 5 * MIN, NOW);
+  const url = new URL(`http://h${barHref(item)}`);
+  assert.equal(url.searchParams.get('run_after_gte'), iso(at('14:01')));
+  assert.equal(url.searchParams.get('run_after_lte'), iso(at('14:06')));
+});
+
+it('barHref : bucket sans run_id connu = liste bombee, pas un lien casse', () => {
+  const runs = [run(1, at('14:01'), at('14:02')), run(2, at('14:02'), at('14:03'))];
+  const [item] = bucketize(runs, DAY_START, 5 * MIN, NOW);
+  const broken = { ...item, kind: 'run', run: { dag_id: item.dagId } }; // run sans run_id
+  assert.match(barHref(broken, DAY_START), /^\/dags\/ALIVE\/runs\?run_after_gte=/);
+});
+
+it('barHref : bucket monotone = meme URL qu\'un bucket mixte', () => {
   const runs = [run(1, at('14:01'), at('14:02'), 'success'), run(2, at('14:02'), at('14:03'), 'success')];
   const [item] = bucketize(runs, DAY_START, 5 * MIN, NOW);
-  assert.match(barHref(item), /state=success$/);
+  const want = new URL(`http://h/dags/ALIVE/runs?run_after_gte=${iso(DAY_START - HOUR)}&run_after_lte=${iso(DAY_START + DAY + HOUR)}`);
+  const got = new URL(`http://h${barHref(item, DAY_START)}`);
+  assert.equal(got.pathname, want.pathname);
+  assert.deepEqual([...got.searchParams.entries()], [...want.searchParams.entries()]);
 });
 
 it('barHref : dag_id et run_id echappes', () => {

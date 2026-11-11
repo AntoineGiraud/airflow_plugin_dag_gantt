@@ -9,6 +9,7 @@
 
 const MINUTE_MS = 60000;
 const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
 
 /** Valeurs du select « Agrégation » (`off` = une barre par run, comme avant). */
 export const BIN_OPTIONS = [
@@ -167,34 +168,45 @@ export const packLanes = (items, maxLanes = 6) => {
   return { packed, lanes: Math.max(laneEnds.length, 1) };
 };
 
+/** Marge (ms) appliquée aux bornes UTC du filtre de journée, voir `barHref`. */
+export const DAY_FILTER_MARGIN_MS = 60 * 60 * 1000;
+
 /**
- * Lien d'une barre. `linkable` est laisse a l'appelant (seules les barres en echec
- * sont des liens) : ici, la forme de l'URL.
+ * Lien d'une barre — **fonction pure** : aucune dépendance à l'état (plus de filtre
+ * par état ni de bornes de tranche), seule la journée de la page compte.
  *
  * - run isolé -> grille du run `/dags/<dag_id>/runs/<run_id>` ;
- * - bucket -> liste des runs du DAG bornée sur la tranche (+ état). Clés vérifiées
- *   dans le bundle UI de l'hôte (Airflow 3.3.2+astro) : l'enum `SearchParamsKeys`
- *   expose `RUN_AFTER_GTE` / `RUN_AFTER_LTE` / `STATE` — donc `state`, **pas**
- *   `run_state` (dont l'équivalent réel est `dag_run_state`, filtre de la liste des
- *   DAGs). Une clé inconnue est ignorée par l'hôte : le lien ouvre alors la liste
- *   du DAG. Caveat : la page native filtre sur `run_after` alors que le Gantt dessine
- *   d'après `start_date` (bornes un peu larges) et pagine 10 runs par défaut.
+ * - bucket (ou run isolé sans `run_id`) -> liste des runs du DAG filtrée sur **la
+ *   journée concernée par la page Gantt** : `run_after_gte` = minuit local du jour,
+ *   `run_after_lte` = minuit local du jour suivant (`dayStartMs` + 24 h, ce qui suit
+ *   le Gantt y compris les jours de 23/25 h autour d'un changement d'heure).
+ *   `dayStartMs` est facultatif : absent, on retombe sur les bornes de la barre.
+ *
+ * Clés vérifiées dans le bundle UI de l'hôte (Airflow 3.3.2+astro) : l'enum
+ * `SearchParamsKeys` expose `RUN_AFTER_GTE` / `RUN_AFTER_LTE` — donc **plus** de
+ * `state` (le filtre d'état est volontairement retiré) et jamais `run_state`, qui
+ * n'existe pas sur cette page (son équivalent réel, `dag_run_state`, filtre la liste
+ * des DAGs).
+ * Les bornes sont élargies d'1 h côté UTC : la page native filtre `run_after` en
+ * UTC alors que le Gantt dessine d'après `start_date` en heure locale — sans marge,
+ * un run démarré juste après minuit local disparaîtrait de la liste (1 h couvre
+ * tous les fuseaux utiles à une instance ; élargir ne peut qu'inclure un run de
+ * plus, jamais en cacher).
+ *
+ * Caveat conservé : la page native pagine 10 runs par défaut.
  */
-export const barHref = (item) => {
+export const barHref = (item, dayStartMs) => {
   const listUrl = `/dags/${encodeURIComponent(item.dagId)}/runs`;
-  if (item.kind !== 'bucket') {
+  if (item.kind !== 'bucket' && item.run && item.run.run_id) {
     return `${listUrl}/${encodeURIComponent(item.run.run_id)}`;
   }
   const params = new URLSearchParams();
-  if (item.startMs != null) params.set('run_after_gte', new Date(item.startMs).toISOString());
-  if (item.endMs != null) params.set('run_after_lte', new Date(item.endMs).toISOString());
-  const states = item.states || {};
-  if (states.failed) {
-    // Cas réel d'une barre cliquable : on mène l'utilisateur aux runs en échec.
-    params.set('state', 'failed');
+  if (Number.isFinite(dayStartMs)) {
+    params.set('run_after_gte', new Date(dayStartMs - DAY_FILTER_MARGIN_MS).toISOString());
+    params.set('run_after_lte', new Date(dayStartMs + DAY_MS + DAY_FILTER_MARGIN_MS).toISOString());
   } else {
-    const only = Object.keys(states);
-    if (only.length === 1 && only[0] !== 'none') params.set('state', only[0]);
+    if (item.startMs != null) params.set('run_after_gte', new Date(item.startMs).toISOString());
+    if (item.endMs != null) params.set('run_after_lte', new Date(item.endMs).toISOString());
   }
   const query = params.toString();
   return query ? `${listUrl}?${query}` : listUrl;

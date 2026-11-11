@@ -190,7 +190,7 @@ const MIN_DUR_PX = 55; // place pour « 4m 12s »
 // `aggregation.js` : ce sont des fonctions pures, couvertes par le test node.
 
 
-const Bar = React.memo(function Bar({ item, windowStart, windowSpan, chartWidth }) {
+const Bar = React.memo(function Bar({ item, windowStart, windowSpan, chartWidth, dayStartMs }) {
   const startMs = item.startMs == null ? windowStart : item.startMs;
   const endMs = item.endMs == null || item.endMs < startMs ? startMs : item.endMs;
   const left = Math.max(0, ((startMs - windowStart) / windowSpan) * 100);
@@ -219,19 +219,23 @@ const Bar = React.memo(function Bar({ item, windowStart, windowSpan, chartWidth 
   };
   const label = `${item.running ? '▶' : ''}${parts.length ? `${item.running ? ' ' : ''}${parts.join(' · ')}` : ''}`;
 
-  // Seule une barre en échec est un lien : le Gantt reste une vue d'ensemble, pas
-  // un lanceur. Le détail de n'importe quelle barre passe par le tooltip partagé.
+  // Seule une barre utile en clic est un lien : un **échec** (y compris dans un bucket,
+  // pour aller voir les logs) ou un **run unique** (sa grille). Les buckets réussis
+  // restent muets : moins de <a> dans le DOM, pas de fausse affordance, et le tooltip
+  // donne déjà le détail. Le lien mène à la liste des runs du DAG **de cette journée**.
   const failed = item.state === 'failed';
+  const linkable = failed || item.count === 1;
   const style = {
     position: 'absolute',
     top: `${(item.lane || 0) * ROW_HEIGHT}px`,
     left: `${left}%`,
     width: `${width}%`,
     height: `${BAR_HEIGHT}px`,
-    display: failed ? 'block' : undefined,
+    // <a> est inline par défaut : sans bloc, la largeur/position en % ne suivent pas.
+    display: 'block',
   };
 
-  if (!failed) {
+  if (!linkable) {
     return (
       <Box
         data-gk={item.key}
@@ -249,11 +253,15 @@ const Bar = React.memo(function Bar({ item, windowStart, windowSpan, chartWidth 
   }
   return (
     <a
-      href={barHref(item)}
+      href={barHref(item, dayStartMs)}
       data-nav=""
       data-gk={item.key}
       className="gk-nav"
-      title={item.kind === 'bucket' ? `${item.count} runs en échec — ouvrir la liste bornée` : 'Ouvrir ce run'}
+      title={
+        item.kind === 'bucket'
+          ? `${item.count} runs — ouvrir les runs du DAG de cette journée`
+          : 'Ouvrir ce run'
+      }
       style={style}
     >
       <Box width="100%" height="100%" cursor="pointer" {...common}>
@@ -348,6 +356,7 @@ const DagRow = React.memo(function DagRow({
   windowStart,
   windowSpan,
   chartWidth,
+  dayStartMs,
 }) {
   const { packed, lanes } = useMemo(() => packLanes(items, MAX_LANES), [items]);
   const height = lanes * ROW_HEIGHT + 2;
@@ -382,7 +391,7 @@ const DagRow = React.memo(function DagRow({
       </Box>
       <Box position="relative" flex="1" height={`${height}px`}>
         {packed.map((item) => (
-          <Bar key={item.key} item={item} windowStart={windowStart} windowSpan={windowSpan} chartWidth={chartWidth} />
+          <Bar key={item.key} item={item} windowStart={windowStart} windowSpan={windowSpan} chartWidth={chartWidth} dayStartMs={dayStartMs} />
         ))}
       </Box>
     </Flex>
@@ -1030,6 +1039,7 @@ const DagGanttWidget = () => {
                           windowStart={windowStart}
                           windowSpan={windowSpan}
                           chartWidth={chartWidth}
+                          dayStartMs={dayStart}
                         />
                       ))}
                   </Box>
@@ -1045,6 +1055,7 @@ const DagGanttWidget = () => {
                     windowStart={windowStart}
                     windowSpan={windowSpan}
                     chartWidth={chartWidth}
+                    dayStartMs={dayStart}
                   />
                 ))}
           </Box>

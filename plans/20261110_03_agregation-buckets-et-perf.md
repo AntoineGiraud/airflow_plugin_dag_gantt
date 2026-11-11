@@ -1,5 +1,14 @@
 # Agrégation des runs en buckets + correction de latence
 
+
+> **Revue 2026-11-10 — la redirection des barres a été refaite depuis :** le lien d'un
+> bucket ne porte **plus** `state=failed` ni les bornes de la tranche. Une barre cliquable
+> (état en échec **ou** `count === 1`) mène à `/dags/<dag_id>/runs?run_after_gte=<minuit
+> local du jour - 1 h>&run_after_lte=<lendemain - +1 h>`, c'est-à-dire **la journée de la
+> page** (marges UTC : la page native filtre `run_after` en UTC, le Gantt dessine d'après
+> `start_date` locale). Le run unique ouvre toujours sa grille. See `barHref` dans
+> `js/src/aggregation.js` et les tests `barHref :` de `js/test/aggregation.test.mjs`.
+
 ## Contexte
 
 Sur la journée du 2026-11-10, le groupe `« autre »` contient **1 DAG / 1126 runs** (`ALIVE`), et le
