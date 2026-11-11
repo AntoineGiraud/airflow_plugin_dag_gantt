@@ -77,6 +77,13 @@ const fmtDuration = (ms) => {
 
 const fmtClock = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+// Étendue de la fenêtre en deux caractères pour la puce : « 9 h », « 45 min », « 24 h ».
+const fmtSpanShort = (ms) => {
+  const h = Math.round(ms / 3600000);
+  if (h >= 1) return `${h} h`;
+  return `${Math.max(1, Math.round(ms / 60000))} min`;
+};
+
 // Plus petit palier tel qu'on garde <= MAX_TICKS graduations sur le span donne.
 const pickStepMs = (spanMs) => {
   const step = TICK_STEPS_MIN.find((m) => spanMs / (m * 60000) <= MAX_TICKS);
@@ -521,6 +528,420 @@ const useUrlSync = (query) => {
   }, [nextSearch]); // eslint-disable-line react-hooks/exhaustive-deps
 };
 
+/* ------------------------------------------------------------------ */
+/* Ruban de contrôles (ligne permanente + puces + panneau à onglets)   */
+/* ------------------------------------------------------------------ */
+
+/* Organisation « à la Word/Excel » : les contrôles sont rangés par catégorie dans deux
+   onglets, la ligne du haut ne gardant que l'essentiel (titre, date, onglets, compteurs).
+
+   Deux règles non évidentes, toutes deux couvertes par `js/test/render.test.mjs` :
+
+   - l'onglet actif et l'état ouvert/replié sont **locaux** : l'URL partageable ne porte
+     toujours que la VUE (filtres, tri, agrégation, groupement…) ;
+   - le ruban **masque, il ne démonte pas** — `hidden` pour le navigateur, plus
+     `data-visible` / `data-state` relus par le test headless (happy-dom ne rend pas
+     l'attribut booléen `hidden` reçu en prop React). Les contrôles d'interface portent
+     donc `data-gk-ui`, à ne pas confondre avec `data-gk` qui identifie les **barres**
+     (le survol et le tooltip délégué en dépendent). */
+const PANEL_TABS = [
+  { key: 'filters', label: 'Filtres', icon: '🔍' },
+  { key: 'view', label: 'Affichage', icon: '⚙️' },
+];
+
+/* Ouvert au montage, sur l'onglet Filtres ; re-cliquer l'onglet actif le replie, **y
+   compris avec des filtres actifs** : la place rendue au Gantt prime, et rien n'est perdu
+   — les puces restent visibles dans la ligne du haut et chacune se retire par son ✕. */
+const useRibbon = () => {
+  const [ribbon, setRibbon] = useState({ open: true, tab: 'filters' });
+  const toggle = useCallback(
+    (tab) =>
+      setRibbon((prev) =>
+        !prev.open || prev.tab !== tab ? { open: true, tab } : { open: false, tab: prev.tab }
+      ),
+    []
+  );
+  return { ...ribbon, toggle };
+};
+
+/* Libellé d'un contrôle du panneau, en 10 px au-dessus : chaque bloc se lit sans deviner
+   à quoi sert le champ (le placeholder seul ne suffit pas, surtout pour les selects).
+   Sans libellé, une espace insécable est réservée : un bouton aligné à droite du panneau
+   se trouve ainsi sur la même ligne que les champs, pas collé en haut. */
+const NBSP = '\u00a0';
+const Field = ({ label = NBSP, title, children }) => (
+  <VStack gap={1} alignItems="flex-start">
+    <Text fontSize="10px" color="fg.muted" title={title}>
+      {label}
+    </Text>
+    {children}
+  </VStack>
+);
+
+/* Puce de filtre actif : libellé + valeur + ✕ qui remet la valeur à vide. Visible tant que
+   le filtre est actif, masquée sinon — jamais démontée : une vue filtrée doit rester
+   explicable même ruban replié. */
+const FilterChip = ({ name, shown, label, value, onClear }) => (
+  <HStack
+    gap={1}
+    as="button"
+    type="button"
+    data-gk-ui={`chip-${name}`}
+    data-visible={shown ? 'yes' : 'no'}
+    hidden={!shown}
+    px={2}
+    py="2px"
+    borderWidth="1px"
+    borderColor="border.default"
+    borderRadius="full"
+    fontSize="11px"
+    cursor="pointer"
+    bg="bg.subtle"
+    onClick={onClear}
+    title={`${label} : ${value} — cliquer pour retirer ce filtre`}
+  >
+    <Text as="span" fontSize="11px" color="fg.muted">{label}</Text>
+    <Text as="span" fontWeight="semibold">{clip(value, 40)}</Text>
+    <Text as="span" color="fg.muted">✕</Text>
+  </HStack>
+);
+
+/* Cases d'état du panneau Filtres : **mêmes données et même état** que la légende
+   cliquable du bas (legendStates / toggleState) — les deux restent synchronisées.
+
+   Rendues pour les états **présents dans la journée ou déjà sélectionnés**, dans cet
+   ordre : un état sélectionné reste donc toujours maniable (sinon la case deviendrait
+   muette pendant que la puce, elle, affiche encore ce filtre), et les états absents
+   n'encombrent pas le panneau. */
+const StateChecks = ({ states, stateSet, counts, onToggle }) => {
+  const shownStates = states.filter((s) => (counts[s] || 0) > 0 || stateSet.has(s));
+  return (
+    <HStack gap={3} flexWrap="wrap" data-gk-ui="state-checks">
+      {shownStates.map((s) => {
+        const active = stateSet.has(s);
+        const count = counts[s] || 0;
+        return (
+          <HStack
+            key={s}
+            gap={1}
+            as="button"
+            type="button"
+            data-gk-ui={`state-${s}`}
+            data-state={active ? 'on' : 'off'}
+            aria-pressed={active}
+            onClick={() => onToggle(s)}
+            title={
+              active
+                ? `Retirer le filtre « ${s} »`
+                : `Filtrer sur cet état (cumulable)${count ? ` · ${count} runs` : ''}`
+            }
+          >
+            <Box
+              width="12px"
+              height="12px"
+              borderRadius="3px"
+              borderWidth="1px"
+              borderColor="border.default"
+              bg={active ? STATE_COLORS[s] || DEFAULT_COLOR : 'transparent'}
+              color="white"
+              fontSize="9px"
+              lineHeight="12px"
+              textAlign="center"
+            >
+              {active ? '✓' : ''}
+            </Box>
+            <Text as="span" fontSize="12px" fontWeight={active ? 'bold' : 'normal'}>
+              {s}
+              {count ? ` (${count})` : ''}
+            </Text>
+          </HStack>
+        );
+      })}
+    </HStack>
+  );
+};
+
+const ControlRibbon = ({
+  ribbon,
+  date,
+  setDate,
+  loading,
+  error,
+  nameFilter,
+  setNameFilter,
+  tagFilter,
+  setTagFilter,
+  allTags,
+  stagesText,
+  setStagesText,
+  legendStates,
+  stateSet,
+  stateCounts,
+  toggleState,
+  setStateFilter,
+  resetFilters,
+  hasActiveFilters,
+  sortKey,
+  setSortKey,
+  bin,
+  setBin,
+  binTitle,
+  zoomAuto,
+  setZoomAuto,
+  grouped,
+  setGrouped,
+  showCollapseAll,
+  allCollapsed,
+  toggleCollapseAll,
+  onRefresh,
+  summaryLabel,
+  summaryTitle,
+  windowChipLabel,
+  windowChipTitle,
+}) => {
+  // Combien de puces sont visibles : 0 -> le conteneur lui-même se met en `hidden`
+  // (il reste dans le DOM, comme les puces et les panneaux).
+  const activeChips = (nameFilter.trim() ? 1 : 0) + (tagFilter ? 1 : 0) + (stateSet.size > 0 ? 1 : 0);
+  return (
+    <VStack alignItems="stretch" gap={2} data-gk-ui="ribbon">
+      {/* Ligne permanente : titre, date, onglets, statut — visible même ruban replié. */}
+      <HStack gap={3} flexWrap="wrap">
+        <Text fontSize="xl" fontWeight="bold">📊 Global Dag Gantt</Text>
+        <HStack gap={1}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setDate((d) => shiftDate(d, -1))}
+            title="Jour précédent"
+            aria-label="Jour précédent"
+          >
+            ⬅️
+          </Button>
+          <Input
+            type="date"
+            size="sm"
+            width="auto"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setDate((d) => shiftDate(d, 1))}
+            disabled={!date || date >= todayLocal()}
+            title={date >= todayLocal() ? "Aujourd'hui : pas de date future" : 'Jour suivant'}
+            aria-label="Jour suivant"
+          >
+            ➡️
+          </Button>
+        </HStack>
+        {/* Onglets fabriqués avec les composants déjà sûrs de l'hôte (pas de Tabs
+            Chakra dont la présence n'est pas garantie — même garde-fou que NativeSelect). */}
+        <HStack gap={1} role="tablist" data-gk-ui="tabs" aria-label="Catégories de contrôles">
+          {PANEL_TABS.map((t) => {
+            const active = ribbon.open && ribbon.tab === t.key;
+            return (
+              <Button
+                key={t.key}
+                size="sm"
+                role="tab"
+                data-gk-ui={`tab-${t.key}`}
+                variant={active ? 'solid' : 'outline'}
+                aria-selected={active}
+                aria-expanded={active}
+                onClick={() => ribbon.toggle(t.key)}
+                title={`${t.label} — cliquer pour ${active ? 'replier' : 'ouvrir'}`}
+              >
+                {t.icon} {t.label}
+              </Button>
+            );
+          })}
+        </HStack>
+        {/* Puces des filtres actifs, **à droite des onglets** : c'est ce qui rappelle que
+            la vue est filtrée quand le panneau est replié, et chacune se retire par son ✕.
+            Jamais démontées, seulement masquées — DOM et sélecteurs restent stables. */}
+        <HStack gap={2} flexWrap="wrap" data-gk-ui="chips" hidden={activeChips === 0}>
+          <FilterChip name="q" shown={Boolean(nameFilter.trim())} label="nom" value={nameFilter.trim()} onClear={() => setNameFilter('')} />
+          <FilterChip name="tag" shown={Boolean(tagFilter)} label="tag" value={tagFilter} onClear={() => setTagFilter('')} />
+          <FilterChip
+            name="state"
+            shown={stateSet.size > 0}
+            label="états"
+            value={Array.from(stateSet).join(', ')}
+            onClear={() => setStateFilter([])}
+          />
+        </HStack>
+        <Spacer />
+        {/* Puce d'état de la fenêtre : ce que l'axe montre (l'étendue) et le mode qui le
+            produit, en deux caractères — et **cliquable**, puisqu'elle ne fait que renvoyer
+            au même état `zoomAuto` que l'onglet Affichage : une seule source de vérité,
+            deux façons d'agir dessus. */}
+        <HStack
+          as="button"
+          type="button"
+          gap={1}
+          px={2}
+          py="2px"
+          borderWidth="1px"
+          borderColor="border.default"
+          borderRadius="full"
+          bg="bg.subtle"
+          fontSize="11px"
+          cursor="pointer"
+          whiteSpace="nowrap"
+          data-gk-ui="window-chip"
+          onClick={() => setZoomAuto((z) => !z)}
+          title={windowChipTitle}
+        >
+          <Text as="span">{zoomAuto ? '🔍' : '🕐'}</Text>
+          <Text as="span" fontWeight="semibold">{windowChipLabel}</Text>
+        </HStack>
+        {/* La ligne du haut ne garde que ce que l'axe du Gantt ne dit pas : combien de runs
+            survivent aux filtres et combien l'agrégation en a fusionnés. Fenêtre, bornes et
+            tranche passent en infobulle. */}
+        <Text fontSize="sm" color="fg.muted" data-gk-ui="summary" title={summaryTitle}>
+          {summaryLabel}
+        </Text>
+      </HStack>
+
+      {/* Panneau : fond `bg.subtle` (gray.50 / gray.950) pour le détacher de la page, bord
+          `border.muted` et **arête basse** `border.default` (gray.200 / gray.800) — le liseré
+          demandé, en tokens : un #ddd en dur ferait une tache en thème sombre. Pas d'ombre :
+          `boxShadow` rend un dégradé bien plus lourd que le trait attendu (retour utilisateur).
+          Tokens vérifiés dans le thème de l'hôte (bundle UI : border.{subtle,muted,DEFAULT,
+          emphasized} = gray.50/100/200/… selon le mode). */}
+      <Flex
+        data-gk-ui="panel-filters"
+        role="tabpanel"
+        data-visible={ribbon.open && ribbon.tab === 'filters' ? 'yes' : 'no'}
+        hidden={!(ribbon.open && ribbon.tab === 'filters')}
+        wrap="wrap"
+        gap={4}
+        alignItems="flex-start"
+        px={3}
+        py={2}
+        borderWidth="1px"
+        borderColor="border.muted"
+        borderBottomColor="border.default"
+        borderRadius="md"
+        bg="bg.subtle"
+      >
+        <Field label="Nom de DAG / run">
+          <Input
+            placeholder="Filtrer par nom de DAG ou run…"
+            size="sm"
+            maxW="240px"
+            value={nameFilter}
+            onChange={(e) => setNameFilter(e.target.value)}
+          />
+        </Field>
+        <Field label="Tag">
+          <Select value={tagFilter} onChange={setTagFilter} options={allTags} placeholder="Tous les tags" />
+        </Field>
+        <Field label="États (cumulables)" title="Les mêmes que la légende cliquable en bas du Gantt — les deux sont synchronisés.">
+          <StateChecks states={legendStates} stateSet={stateSet} counts={stateCounts} onToggle={toggleState} />
+        </Field>
+        <Spacer />
+        <Field>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!hasActiveFilters}
+            onClick={resetFilters}
+            title="Remettre à vide nom, tag, états et étapes (la date est conservée)"
+          >
+            ✕ Réinitialiser les filtres
+          </Button>
+        </Field>
+      </Flex>
+
+      <Flex
+        data-gk-ui="panel-view"
+        role="tabpanel"
+        data-visible={ribbon.open && ribbon.tab === 'view' ? 'yes' : 'no'}
+        hidden={!(ribbon.open && ribbon.tab === 'view')}
+        wrap="wrap"
+        gap={4}
+        alignItems="flex-start"
+        px={3}
+        py={2}
+        borderWidth="1px"
+        borderColor="border.muted"
+        borderBottomColor="border.default"
+        borderRadius="md"
+        bg="bg.subtle"
+      >
+        <Field label="Ordre des lignes">
+          <Select value={sortKey} onChange={setSortKey} options={SORT_OPTIONS} />
+        </Field>
+        <Field label="Agrégation des runs">
+          <Select value={bin} onChange={setBin} options={BIN_OPTIONS} title={binTitle} />
+        </Field>
+        <Field label="Fenêtre">
+          <Button
+            size="sm"
+            variant={zoomAuto ? 'solid' : 'outline'}
+            onClick={() => setZoomAuto((z) => !z)}
+            title="Zoom sur les runs filtres (3 h mini) / journee complete"
+          >
+            {zoomAuto ? '🔍 Zoom auto' : '🕐 Journée complète'}
+          </Button>
+        </Field>
+        <Field label="Regroupement">
+          <HStack gap={1}>
+            <Button
+              size="sm"
+              variant={grouped ? 'solid' : 'outline'}
+              onClick={() => setGrouped((g) => !g)}
+              title="Regrouper les DAGs par tag principal / liste plate"
+            >
+              {grouped ? '🗂 Groupes' : '📄 Liste'}
+            </Button>
+            {showCollapseAll && (
+              <Button size="sm" variant="ghost" onClick={toggleCollapseAll}>
+                {allCollapsed ? '▸ Tout déplier' : '▾ Tout replier'}
+              </Button>
+            )}
+          </HStack>
+        </Field>
+        {/* Les étapes ne filtrent rien : elles disent **comment** les DAGs sont groupés
+            (quel tag devient le groupe, et dans quel ordre). Leur place est donc ici, à
+            côté du regroupement — ni dans les filtres, ni dans les puces retirables. */}
+        <Field label="Ordre des groupes (tags, par priorité)">
+          <Input
+            data-gk-ui="stages-input"
+            placeholder="ex. collecte, normalisation, export"
+            size="sm"
+            maxW="220px"
+            value={stagesText}
+            onChange={(e) => setStagesText(e.target.value)}
+            title="Ex. collecte, normalisation, raffinement, export — le tag principal (donc le groupe) est le premier de cette liste présent sur le DAG. Vide = détection automatique par fréquence. Ne filtre rien : ça ne change que l'ordre et l'appartenance des groupes."
+          />
+        </Field>
+        <Spacer />
+        <Field>
+          {/* `data-gk-ui` : sélecteur stable pour les tests, sans rapport avec `data-gk` (les barres). */}
+          <Button
+            size="sm"
+            variant="outline"
+            data-gk-ui="refresh"
+            onClick={onRefresh}
+            title="Recharger les runs de la journée (sinon rafraîchissement auto toutes les 30 s)"
+          >
+            ⟳ Rafraîchir
+          </Button>
+        </Field>
+      </Flex>
+
+      {error && (
+        <Box bg="failed.surface" p={3} borderRadius="md">
+          <Text color="failed.solid">Erreur API : {error}</Text>
+        </Box>
+      )}
+    </VStack>
+  );
+};
+
 const DagGanttWidget = () => {
   // Hydratation depuis l'URL au montage (les valeurs par defaut ne sont pas reecrites).
   const [initialQuery] = useState(readInitialQuery);
@@ -561,6 +982,19 @@ const DagGanttWidget = () => {
     // clés = tags normalisés (ou « autre »), séparés par des virgules dans l'URL
     new Set((initialQuery.get('collapsed') || '').split(',').filter(Boolean))
   );
+
+  // Filtres « agissants » : ce que le ruban affiche en puces. `resetFilters` ne touche ni
+  // la date (on remet la vue à zéro sans changer de journée) ni les étapes (réglage de
+  // regroupement, pas un filtre — voir l'onglet Affichage).
+  const hasActiveFilters = Boolean(nameFilter.trim() || tagFilter || stateFilter.length > 0);
+  const resetFilters = useCallback(() => {
+    setNameFilter('');
+    setTagFilter('');
+    setStateFilter([]);
+  }, []);
+
+  // Onglet actif + ouvert/replié du ruban : état **local**, jamais dans l'URL partageable.
+  const ribbon = useRibbon();
 
   // Largeur reelle de la zone de temps (px) -> sait quelles barres peuvent afficher leur duree.
   const chartRef = useRef(null);
@@ -641,6 +1075,20 @@ const DagGanttWidget = () => {
     setStateFilter((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : prev.concat(s)));
   }, []);
   const stateSet = useMemo(() => new Set(stateFilter), [stateFilter]);
+
+  // Nombre de runs par état **sur les filtres hors état** : ce que chaque case ajoutera
+  // ou retirera (la légende du bas, elle, compte sur la journée entière).
+  const stateCounts = useMemo(() => {
+    const needle = nameFilter.trim().toLowerCase();
+    const out = {};
+    data.runs.forEach((r) => {
+      if (needle && !(r.dag_id.toLowerCase().includes(needle) || r.run_id.toLowerCase().includes(needle))) return;
+      if (tagFilter && !r.tags.includes(tagFilter)) return;
+      const s = r.state || 'none';
+      out[s] = (out[s] || 0) + 1;
+    });
+    return out;
+  }, [data.runs, nameFilter, tagFilter]);
 
   // Filtrage instantane sans rappel API
   const filtered = useMemo(() => {
@@ -873,100 +1321,55 @@ const DagGanttWidget = () => {
           <a> natifs ne peuvent pas recevoir de prop Chakra `_hover`. */}
       <style>{'.gk-nav{color:inherit;text-decoration:none;cursor:pointer}.gk-nav:hover{text-decoration:underline}'}</style>
       <VStack alignItems="stretch" gap={3}>
-        <HStack gap={3} flexWrap="wrap">
-          <Text fontSize="xl" fontWeight="bold">📊 Global Dag Gantt</Text>
-          <HStack gap={1}>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setDate((d) => shiftDate(d, -1))}
-              title="Jour précédent"
-              aria-label="Jour précédent"
-            >
-              ⬅️
-            </Button>
-            <Input
-              type="date"
-              size="sm"
-              width="auto"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setDate((d) => shiftDate(d, 1))}
-              disabled={!date || date >= todayLocal()}
-              title={date >= todayLocal() ? "Aujourd'hui : pas de date future" : 'Jour suivant'}
-              aria-label="Jour suivant"
-            >
-              ➡️
-            </Button>
-          </HStack>
-          <Input
-            placeholder="Filtrer par nom de DAG ou run…"
-            size="sm"
-            maxW="240px"
-            value={nameFilter}
-            onChange={(e) => setNameFilter(e.target.value)}
-          />
-          <Select value={tagFilter} onChange={setTagFilter} options={allTags} placeholder="Tous les tags" />
-          <Input
-            placeholder="Étapes (tags, ordre de priorité)…"
-            size="sm"
-            maxW="220px"
-            value={stagesText}
-            onChange={(e) => setStagesText(e.target.value)}
-            title="Ex. collecte, normalisation, raffinement, export — le tag principal (donc le groupe) est le premier de cette liste présent sur le DAG. Vide = détection automatique."
-          />
-          <Select value={sortKey} onChange={setSortKey} options={SORT_OPTIONS} />
-          <Select value={bin} onChange={setBin} options={BIN_OPTIONS} title={binTitle} />
-          <Button
-            size="sm"
-            variant={grouped ? 'solid' : 'outline'}
-            onClick={() => setGrouped((g) => !g)}
-            title="Regrouper les DAGs par tag principal / liste plate"
-          >
-            {grouped ? '🗂 Groupes' : '📄 Liste'}
-          </Button>
-          {grouped && groupKeys.length > 1 && (
-            <Button size="sm" variant="ghost" onClick={toggleCollapseAll}>
-              {allCollapsed ? '▸ Tout déplier' : '▾ Tout replier'}
-            </Button>
-          )}
-          <Button size="sm" variant="outline" onClick={() => fetchData()}>
-            ⟳ Refresh
-          </Button>
-          <Button
-            size="sm"
-            variant={zoomAuto ? 'solid' : 'outline'}
-            onClick={() => setZoomAuto((z) => !z)}
-            title="Zoom sur les runs filtres (3 h mini) / journee complete"
-          >
-            {zoomAuto ? '🔍 Zoom auto' : '🕐 Journée complète'}
-          </Button>
-          <Spacer />
-          <Text
-            fontSize="sm"
-            color="fg.muted"
-            title={
-              `${zoomed ? 'Fenêtre ajustée aux runs filtrés' : 'Journée complète'}` +
-              (mergedCount > 0 ? ` · ${mergedCount} runs fusionnés en buckets de ${binLabel(binMs)}` : '')
-            }
-          >
-            {fmtClock(windowStart)} → {fmtClock(windowStart + windowSpan)} · {fmtDuration(windowSpan)}
-            {mergedCount > 0 ? ` · buckets ${binLabel(binMs)}` : ''}
-          </Text>
-          <Text fontSize="sm" color="fg.muted" title="Runs de la journée correspondant aux filtres">
-            {filtered.length} run{filtered.length > 1 ? 's' : ''}
-          </Text>
-        </HStack>
-
-        {error && (
-          <Box bg="failed.surface" p={3} borderRadius="md">
-            <Text color="failed.solid">Erreur API : {error}</Text>
-          </Box>
-        )}
+        <ControlRibbon
+          ribbon={ribbon}
+          date={date}
+          setDate={setDate}
+          loading={loading}
+          error={error}
+          nameFilter={nameFilter}
+          setNameFilter={setNameFilter}
+          tagFilter={tagFilter}
+          setTagFilter={setTagFilter}
+          allTags={allTags}
+          stagesText={stagesText}
+          setStagesText={setStagesText}
+          legendStates={legendStates}
+          stateSet={stateSet}
+          stateCounts={stateCounts}
+          toggleState={toggleState}
+          setStateFilter={setStateFilter}
+          resetFilters={resetFilters}
+          hasActiveFilters={hasActiveFilters}
+          sortKey={sortKey}
+          setSortKey={setSortKey}
+          bin={bin}
+          setBin={setBin}
+          binTitle={binTitle}
+          zoomAuto={zoomAuto}
+          setZoomAuto={setZoomAuto}
+          grouped={grouped}
+          setGrouped={setGrouped}
+          showCollapseAll={grouped && groupKeys.length > 1}
+          allCollapsed={allCollapsed}
+          toggleCollapseAll={toggleCollapseAll}
+          onRefresh={() => fetchData()}
+          summaryLabel={
+            `${filtered.length} run${filtered.length > 1 ? 's' : ''}` +
+            (mergedCount > 0 ? ` · ${mergedCount} fusionnés` : '')
+          }
+          summaryTitle={
+            `${fmtClock(windowStart)} → ${fmtClock(windowStart + windowSpan)} ` +
+            `(${fmtDuration(windowSpan)}, ${zoomed ? 'fenêtre ajustée aux runs filtrés' : 'journée complète'})` +
+            (mergedCount > 0 ? ` · ${mergedCount} runs fusionnés par tranche de ${binLabel(binMs)}` : '')
+          }
+          windowChipLabel={fmtSpanShort(windowSpan)}
+          windowChipTitle={
+            `${fmtClock(windowStart)} → ${fmtClock(windowStart + windowSpan)} · ${fmtDuration(windowSpan)}\n` +
+            `${zoomAuto ? 'Zoom auto sur les runs filtrés (3 h minimum)' : 'Journée complète'}\n` +
+            `Cliquer pour ${zoomAuto ? 'afficher les 24 h' : 'zoomer sur les runs filtrés'}`
+          }
+        />
 
         {loading ? (
           <Text>Loading…</Text>

@@ -29,6 +29,11 @@ la plateforme.
 - **Couleurs et thème 100 % natifs** : le widget consomme le design system d'Airflow, branding
   d'instance inclus (mécanisme expliqué en §2.3) ;
 - **Filtres instantanés** (nom de DAG/run, tag, état) sans rappel serveur ;
+- **Un ruban de contrôles à deux onglets** (🔍 Filtres / ⚙️ Affichage), à la Word/Excel : la ligne du
+  haut ne garde que la date, les onglets, une puce d'état `🔍 9 h` / `🕐 24 h` (cliquable : elle
+  bascule zoom auto ↔ journée complète) et le compteur de runs ; les **puces de filtres** collées aux
+  onglets rappellent ce qui filtre et se retirent d'un ✕ — le panneau se replie donc sans jamais
+  perdre la trace des filtres ; un `✕ Réinitialiser les filtres` remet la vue à zéro (date conservée) ;
 - **Runs en cours** : la barre s'étire jusqu'à l'instant T, vue rafraîchie toutes les 30 s ;
 - **Vue d'ensemble, pas un lanceur** : seuls le **nom du DAG** (page du DAG) et les barres qui
   servent à quelque chose sont cliquables — un **run unique** ouvre sa grille, un **bucket**

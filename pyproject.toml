@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "airflow-dag-gantt"
-version = "0.6.0"
+version = "0.7.0"
 description = "Global Dag Gantt — vue macro de tous les DagRun d'une journée (Airflow 3.1+)"
 readme = "README.md"
 # 3.12 = plancher réel du déploiement : Astro Runtime 3.2/3.3 = Python 3.12–3.14 (défaut 3.14),
