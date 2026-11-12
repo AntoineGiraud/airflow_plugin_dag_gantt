@@ -32,10 +32,13 @@ export const REFRESH_MS = 30000; // rafraichissement leger (barres running + don
 export const MIN_COUNT_PX = 24; // place pour « 12× »
 export const MIN_DUR_PX = 55; // place pour « 4m 12s »
 
-// Tri des rangees de DAGs (valeurs partagees avec l'URL, cf. step URL sync)
+// Tri des rangees de DAGs (valeurs partagees avec l'URL, cf. step URL sync).
+// Le libellé dit le SENS : « 1er run » est chronologique (le plus tôt de la journée en haut),
+// « Dernier run » est décroissant (la dernière activité en haut) — sans cette précision les deux
+// se ressemblent trop pour être distingués.
 export const SORT_OPTIONS = [
-  { value: 'first', label: 'Tri : 1er run' },
-  { value: 'last', label: 'Tri : Dernier run' },
+  { value: 'first', label: 'Tri : 1er run (ancien → récent)' },
+  { value: 'last', label: 'Tri : Dernier run (récent → ancien)' },
   { value: 'name', label: 'Tri : Nom DAG' },
   { value: 'count', label: 'Tri : Nb de runs' },
   { value: 'duration', label: 'Tri : Durée max' },

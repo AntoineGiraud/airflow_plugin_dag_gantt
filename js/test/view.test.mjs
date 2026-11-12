@@ -85,7 +85,11 @@ assert.equal(hasLiveRuns(data), true, 'un run running ou queued déclenche le ti
 /* ------------------------------- lignes par DAG ------------------------------- */
 
 const byFirst = buildRows(runs, 'first', NOW);
-assert.deepEqual(byFirst.map((r) => r.dagId), ['ALPHA', 'alpha', 'beta'], 'tri par 1er run décroissant');
+assert.deepEqual(
+  byFirst.map((r) => r.dagId),
+  ['beta', 'alpha', 'ALPHA'], // 8 h, 9 h, 11 h
+  'tri par 1er run croissant : le DAG qui démarre le plus tôt est en haut'
+);
 const alpha = byFirst.find((r) => r.dagId === 'alpha');
 assert.equal(alpha.count, 2, 'une ligne par DAG, tous ses runs dedans');
 assert.deepEqual(alpha.runs.map((r) => r.run_id), ['run_alpha_001', 'run_alpha_002'], 'runs triés par démarrage croissant');
@@ -105,6 +109,28 @@ assert.deepEqual(
   'tri par nom'
 );
 assert.equal(buildRows(runs, 'inexistant', NOW).length, 3, 'critère inconnu = repli sur le tri par défaut');
+
+// Ex æquo sur le critère : sans départage, les lignes ex æquo gardent l'ordre renvoyé par
+// l'API (ici zoulou avant alpha, mike avant charlie) et dansent d'un rafraîchissement à
+// l'autre. Deux paires construites pour être strictement égales sur firstStart, puis sur lastEnd.
+const tied = {
+  runs: [
+    mk('zoulou', 1, { h: 7 }),
+    mk('alpha', 1, { h: 7 }),
+    mk('mike', 1, { h: 6, dur: 60 }), // finit à 7 h comme zoulou et alpha démarrent
+    mk('charlie', 1, { h: 6, dur: 60 }),
+  ],
+};
+assert.deepEqual(
+  buildRows(tied.runs, 'first', NOW).map((r) => r.dagId),
+  ['charlie', 'mike', 'alpha', 'zoulou'],
+  '1er run à égalité = nom de DAG croissant'
+);
+assert.deepEqual(
+  buildRows(tied.runs, 'last', NOW).map((r) => r.dagId),
+  ['alpha', 'zoulou', 'charlie', 'mike'],
+  'dernier run décroissant, et nom croissant à égalité de fin'
+);
 
 /* ------------------------------- groupes ------------------------------- */
 

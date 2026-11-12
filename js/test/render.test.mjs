@@ -213,6 +213,12 @@ const mount = async (search) => {
 };
 
 const bars = (c) => c.querySelectorAll('[data-gk]');
+// Noms des DAGs dans l'ordre des lignes : les liens de nom portent `data-nav` et un href sans
+// `/runs/` (ceux des barres pointent sur la grille d'un run).
+const rowNames = (c) =>
+  [...c.querySelectorAll('a[data-nav][href^="/dags/"]:not([href*="/runs"])')].map((a) =>
+    decodeURIComponent(a.getAttribute('href').slice('/dags/'.length))
+  );
 // Le résumé de la ligne du haut (runs + runs fusionnés), à droite des onglets.
 const summaryNode = (c) => c.querySelector('[data-gk-ui="summary"]');
 const links = (c) => c.querySelectorAll('a');
@@ -277,6 +283,21 @@ assert.match(
 assert.match(auto.textContent, /1126/, 'le badge de la ligne doit compter des RUNS, pas des buckets');
 assert.equal(globalThis.__tooltipRoots || 0, 0, 'des Chakra.TooltipRoot ont été instanciés par barre');
 
+// Tri par défaut = « 1er run » **croissant** : le DAG qui démarre le plus tôt de la journée est
+// la première ligne (spark_nightly à 02:00 avant ALIVE à 09:00). Écrit décroissant, il triait
+// dans le même ordre que « Dernier run » et le sélecteur de tri semblait mort.
+assert.deepEqual(
+  rowNames(auto),
+  ['spark_nightly', 'ALIVE'],
+  `le 1er run le plus tôt doit être en haut, obtenu ${rowNames(auto)}`
+);
+const byLast = await mount('?date=2026-11-10&sort=last');
+assert.deepEqual(
+  rowNames(byLast),
+  ['ALIVE', 'spark_nightly'],
+  '« Dernier run » garde son sens décroissant : les deux critères sont donc bien différents'
+);
+
 /* ------------------------------- 2. tooltip unique ------------------------------- */
 
 hover(bars(auto)[3]);
@@ -298,7 +319,9 @@ assert.equal(off.querySelectorAll('[data-tip]').length, 1, 'toujours un seul too
 
 // Avec bin=off, **tout** est cliquable (un run par barre) : le lien d'un run reste sa grille.
 globalThis.__navigated = [];
-const soloBar = off.querySelector('a[data-gk]');
+// Ancré sur ALIVE et non sur la 1re barre du DOM : l'ordre des lignes est un fait d'un autre
+// test, ce qu'on vérifie ici est qu'un run isolé est un lien vers sa grille.
+const soloBar = off.querySelector('a[data-gk][href^="/dags/ALIVE/runs/"]');
 assert.ok(soloBar, 'un run isolé doit être un lien');
 click(soloBar);
 await tick();

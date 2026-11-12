@@ -68,7 +68,15 @@ export const mergeLegendStates = (allStates) =>
 export const hasLiveRuns = (data) =>
   data.runs.some((r) => r.state === 'running' || r.state === 'queued');
 
-/** Une ligne par DAG, triée selon le critère choisi (`nowQ` : temps gelé pour les runs en cours). */
+/**
+ * Une ligne par DAG, triée selon le critère choisi (`nowQ` : temps gelé pour les runs en cours).
+ *
+ * Sens des critères chronologiques : `first` est **croissant** (le DAG qui démarre le plus tôt
+ * de la journée en haut — la lecture suit l'ordre d'exécution), `last` est **décroissant** (la
+ * dernière activité récente en haut). Départage par nom de DAG : deux lignes qui démarrent ou
+ * finissent à la même seconde garderaient sinon l'ordre arbitraire renvoyé par l'API, et
+ * danseraient d'un rafraîchissement à l'autre.
+ */
 export const buildRows = (filtered, sortKey, nowQ) => {
   const byDag = new Map();
   filtered.forEach((r) => {
@@ -97,8 +105,8 @@ export const buildRows = (filtered, sortKey, nowQ) => {
     };
   });
   const comparators = {
-    first: (a, b) => b.firstStart - a.firstStart,
-    last: (a, b) => b.lastEnd - a.lastEnd,
+    first: (a, b) => a.firstStart - b.firstStart || a.dagId.localeCompare(b.dagId),
+    last: (a, b) => b.lastEnd - a.lastEnd || a.dagId.localeCompare(b.dagId),
     duration: (a, b) => b.maxDuration - a.maxDuration,
     count: (a, b) => b.count - a.count || a.dagId.localeCompare(b.dagId),
     name: (a, b) => a.dagId.localeCompare(b.dagId),
