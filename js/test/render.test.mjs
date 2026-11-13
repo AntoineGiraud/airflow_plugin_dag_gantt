@@ -101,7 +101,14 @@ export const useNavigate = () => (href) => {
   globalThis.__navigated = globalThis.__navigated || [];
   globalThis.__navigated.push(href);
 };
-export const useSearchParams = () => [new URLSearchParams(globalThis.window.location.search), () => {}];
+export const useSearchParams = () => [
+  new URLSearchParams(globalThis.window.location.search),
+  // Le routeur réel réécrit l'URL ; ici on **enregistre** seulement, pour que le test puisse
+  // dire combien de fois le widget a déclenché une navigation, et avec quoi.
+  (next) => {
+    globalThis.__urlWrites = (globalThis.__urlWrites || []).concat(String(next));
+  },
+];
 `;
 
 globalThis.React = (await import('react')).default;
@@ -447,12 +454,18 @@ assert.ok(
 
 /* Replier le panneau avec des filtres actifs est **voulu** : c'est la place rendue au Gantt
    qui compte, et rien n'est perdu — les puces restent visibles et chacune se retire par
-   son ✕, sans jamais rouvrir le panneau. Vue fraîche pour ne pas dépendre des clics
-   précédents. */
+   son ✕, sans jamais rouvrir le panneau.
+   L'état du ruban (onglet, ouvert/replié) survivant désormais aux remontages — il vit hors du
+   composant, voir `hooks/useRibbon.js` — une « vue fraîche » ne remet plus l'interface à zéro.
+   On l'amène donc **explicitement** où on veut tester, au lieu de le supposer. */
 const folded = await mount('?date=2026-11-10&state=failed');
 assert.ok(bars(folded).length < bars(auto).length, 'la vue est bien filtrée sur failed');
 assert.equal(chipNodes(folded).length, 1, 'une puce « états » visible');
-click(byText(uiNodes(folded, 'tab-'), /tab-filters/)); // onglet actif -> repli
+const filtersTab = byText(uiNodes(folded, 'tab-'), /tab-filters/);
+if (hidden(uiNode(folded, 'panel-filters'))) click(filtersTab); // → ouvert sur Filtres, dans tous les cas
+await tick();
+assert.ok(!hidden(uiNode(folded, 'panel-filters')), 'point de départ : Filtres ouvert');
+click(filtersTab); // onglet actif -> repli
 await tick();
 assert.ok(hidden(uiNode(folded, 'panel-filters')), 'le panneau se replie même avec des filtres actifs');
 assert.equal(chipNodes(folded).length, 1, 'la puce survit au repli : la vue reste explicable');
@@ -526,7 +539,94 @@ assert.ok(
 const resetAgain = [...dirty.querySelectorAll('button')].find((b) => /Réinitialiser les filtres/.test(b.textContent || ''));
 assert.ok(resetAgain.disabled, "réinitialisation désactivée quand aucun filtre n'est actif");
 
-/* ------------------------------- 6. filets ------------------------------- */
+/* ----------------- 6. l'hôte peut remonter le widget, l'interface tient ----------------- */
+
+// Mesuré dans le navigateur (12/11, sonde MutationObserver en console) : `ctrl+R` → onglet
+// Affichage → un clic → l'UI d'Airflow **recrée notre composant**, le nœud du ruban est
+// remplacé. Deux choses ne doivent plus s'ensuivre : un panneau refermé « tout seul », et une
+// navigation offerte à l'hôte par une écriture d'URL inutile au montage.
+globalThis.__urlWrites = [];
+const hostile = await mount('?date=2026-11-10&bin=auto'); // `bin=auto` est redondant : à laisser tel quel
+assert.deepEqual(
+  globalThis.__urlWrites,
+  [],
+  'aucune écriture d\'URL au montage : pas de navigation offerte à l\'hôte pour rien'
+);
+
+// L'état du ruban survivant aux remontages, on l'amène **explicitement** sur Affichage plutôt
+// que de le supposer (un clic sur l'onglet actif replie, c'est son rôle).
+const viewTab = uiNode(hostile, 'tab-view');
+if (hidden(uiNode(hostile, 'panel-view'))) click(viewTab);
+await tick(30);
+assert.equal(hidden(uiNode(hostile, 'panel-view')), false, 'point de départ : Affichage ouvert');
+
+// L'hôte fait son remontage : démontage, puis nouveau rendu dans un autre conteneur — le
+// scénario que ce fichier ne jouait pas (il ne démontait qu'à la fin, et jamais ne remontait).
+roots[roots.length - 1].unmount();
+const again = await mount('?date=2026-11-10&bin=auto');
+assert.equal(hidden(uiNode(again, 'panel-view')), false, 'le panneau choisi survit au remontage de l\'hôte');
+assert.equal(hidden(uiNode(again, 'panel-filters')), true, 'et l\'autre reste replié : rien n\'a été réinitialisé');
+assert.deepEqual(globalThis.__urlWrites, [], 'un remontage ne déclenche toujours aucune écriture d\'URL');
+
+// Le premier vrai geste, lui, écrit bien — et ne charrie que des clés de la VUE.
+click(uiNode(again, 'window-chip'));
+await tick(30);
+assert.deepEqual(
+  globalThis.__urlWrites,
+  ['date=2026-11-10&zoom=day'],
+  'la première écriture vient du geste, sans état d\'interface (ni onglet, ni ouvert/replié)'
+);
+
+/* Le hic-up lui-même : un remontage ne doit plus effacer le Gantt le temps d'un aller-retour
+   API. Pour que l'assertion prouve quelque chose, la réponse est volontairement **lente** : sans
+   mémoire, le composant remonté n'aurait encore rien et afficherait « Loading… » au moment où on
+   le lit. */
+const fastFetch = globalThis.fetch;
+let slowCalls = 0;
+const slowFetch = async (...args) => {
+  slowCalls += 1;
+  const result = await fastFetch(...args);
+  return new Promise((resolve) => setTimeout(() => resolve(result), 250));
+};
+
+const remembered = await mount('?date=2026-11-10&bin=auto'); // réponse rapide : la journée entre en mémoire
+const shownBars = bars(remembered).length;
+assert.ok(shownBars > 0, 'le Gantt était bien affiché avant le remontage');
+
+globalThis.fetch = slowFetch;
+roots[roots.length - 1].unmount();
+const flashContainer = win.document.createElement('div');
+win.document.body.appendChild(flashContainer);
+const flashRoot = createRoot(flashContainer);
+roots.push(flashRoot);
+flashRoot.render(React.createElement(Widget));
+await tick(40); // largement de quoi peindre, bien avant la réponse lente
+assert.equal(bars(flashContainer).length, shownBars, 'le remontage redessine depuis la mémoire : pas de page blanche');
+assert.ok(!/Loading/.test(flashContainer.textContent), 'aucun « Loading… » pendant le rafraîchissement');
+await tick(320);
+assert.equal(slowCalls, 1, 'la requête de rafraîchissement est quand même partie (pas de données périmées gardées)');
+
+/* Même mémoire côté navigation de journée en journée — le ⬅️/➡️ frénétique. Une journée déjà
+   vue se redessine **sans** « Loading… » ; une journée inédite affiche « Loading… », jamais la
+   journée d'à côté. */
+globalThis.fetch = fastFetch;
+const dayBefore = await mount('?date=2026-11-09'); // rapide : 2026-11-09 entre en mémoire
+const dayBeforeBars = bars(dayBefore).length;
+assert.ok(dayBeforeBars > 0, 'la journée déjà vue est bien dessinée avant de rejouer les flèches');
+const prevButton = dayBefore.querySelector('button[aria-label="Jour précédent"]');
+const nextButton = dayBefore.querySelector('button[aria-label="Jour suivant"]');
+assert.ok(prevButton && nextButton, 'les boutons de jour existent');
+globalThis.fetch = slowFetch;
+click(prevButton); // → 2026-11-08, jamais vue
+await tick(40);
+assert.ok(/Loading/.test(dayBefore.textContent), 'journée inédite : on montre « Loading… », pas la journée précédente');
+click(nextButton); // → 2026-11-09, en mémoire
+await tick(40);
+assert.equal(bars(dayBefore).length, dayBeforeBars, 'journée déjà vue : elle se redessine instantanément');
+assert.ok(!/Loading/.test(dayBefore.textContent), 'et sans « Loading… » pendant que la requête de fond court');
+globalThis.fetch = fastFetch;
+
+/* ------------------------------- 7. filets ------------------------------- */
 
 // Chiffres relevés **avant** de démonter : après `unmount`, les conteneurs sont vides.
 const measured = { off: bars(off).length, five: bars(five).length, auto: bars(auto).length };

@@ -56,6 +56,27 @@ repos:
         # ~1 s mesurée : c'est le hook qui monte le vrai composant sur 1127 runs. Le garder
         # au commit coûte moins cher qu'une régression de rendu découverte à la main.
 
+      # --- Santé React : le même scan qu'en CI (job `react-doctor`), sur l'index seulement ---
+      - id: js-react-doctor
+        name: react-doctor — santé React (mêmes règles qu'en CI)
+        # Version **épinglée** comme `ruff@0.16.1` : sinon le hook change de règles tout seul
+        # entre deux commits, et un `git commit` devient une loterie réseau.
+        # - `--staged` : ne scanne que ce qui est dans l'index, et sort en 0 quand aucun fichier
+        #   JS n'est indexé (vérifié) — donc jamais de scan payé pour un commit de markdown.
+        #   Lancé depuis la racine : l'outil retrouve `js/` seul, aucun `cd` à bricoler.
+        # - `--no-score` : pas d'appel au service de score, ni lien de partage, ni Sentry.
+        # - `--no-supply-chain` : le scan Socket.dev des dépendances est ACTIVÉ par défaut ; il
+        #   parle réseau et concerne `package.json`, pas le diff. À réactiver en CI plus tard.
+        # - `--blocking error` (défaut, écrit ici pour qu'on voie ce qui rougit) : une faute de
+        #   type « Bugs » empêche le commit, les avertissements restent des avis. Passer en
+        #   `warning` une fois le dernier avertissement corrigé — tant qu'il y en a un, ça
+        #   rendrait chaque commit rouge pour rien.
+        # Sortie de secours assumée, comme pour les autres hooks : `git commit --no-verify`.
+        entry: bunx -y react-doctor@0.9.22 --staged --no-score --no-supply-chain
+        language: system
+        files: ^js/
+        pass_filenames: false
+
       - id: js-lockfile
         name: verrou JS cohérent avec package.json
         entry: bun install --cwd js --frozen-lockfile

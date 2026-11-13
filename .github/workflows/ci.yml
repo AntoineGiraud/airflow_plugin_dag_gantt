@@ -1,7 +1,8 @@
 # CI du plugin : prouve qu'une wheel buildée ici est installable ET chargeable.
 #
-# Trois jobs volontairement disjoints :
+# Quatre jobs volontairement disjoints :
 #   lint    → style (rapide, aucune dépendance lourde)
+#   react-doctor → santé du front React (la MÊME commande que le hook `js-react-doctor` de prek)
 #   resolve → les métadonnées se résolvent-elles en 3.12 / 3.13 / 3.14 ? (aucune installation :
 #             `uv pip compile` ne fait que résoudre, ~10 s, et c'est CE qui prouve la promesse
 #             « supporte Python 3.13 et 3.14 » au niveau des métadonnées)
@@ -47,6 +48,37 @@ jobs:
       #   illustratif d'un plan suffirait à rendre la CI rouge.
       - run: uvx ruff@0.16.1 check .
       - run: uvx ruff@0.16.1 format --check .
+
+  react-doctor:
+    name: Santé React (react-doctor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Bun est déjà l'outil du dépôt (./build.sh, `bun run test`, tous les hooks JS de prek) :
+      # `npx` marcherait aussi — Node 22 est préinstallé sur ubuntu-latest, et Node 24 sur la
+      # future image 26.04 — mais il ferait deux fois le même travail avec deux gestionnaires.
+      # Mesuré sur ce dépôt : `bunx` froid 3,0 s / chaud 0,4 s, contre 13,1 s / 1,5 s pour `npx`.
+      # En CI, le téléchargement de bun par cette action paie une partie du gain ; ce qui reste
+      # net, c'est qu'il n'y a plus qu'un seul chemin d'exécution entre le local et la CI.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # **La MÊME commande** que le hook `js-react-doctor` de `prek`, sans `--staged` (ici on
+      # audite tout le front, pas l'index). C'est ce qui tient la loi de `.pre-commit-config.yaml` :
+      # un hook local qui n'existe pas en CI dérive, une commande CI absente du local surprend au
+      # moment du push.
+      # - version épinglée (comme ruff et les actions ci-dessus) : sinon le seuil de sévérité des
+      #   règles change tout seul entre deux pushes.
+      # - `--no-score` : pas de lien de partage ni de remontée Sentry depuis la CI.
+      # - `--no-supply-chain` : le scan Socket.dev des dépendances est activé par défaut ; il
+      #   concerne `package.json`, pas le code, et ajoute un appel réseau. À réactiver le jour où
+      #   on veut surveiller `js/package.json`.
+      # - `--blocking error` : les façons de type « Bugs » (hooks, dépendances de mémos) rougissent
+      #   la CI ; les avertissements restent visibles sans bloquer. Passer à `warning` quand le
+      #   front n'aura plus d'avertissement — sinon la CI serait rouge en permanence pour du cosmétique.
+      # Le projet est détecté sur `js/` (seul `package.json` du dépôt) : d'où le `working-directory`.
+      - run: bunx -y react-doctor@0.9.22 --no-score --no-supply-chain --blocking error
+        working-directory: js
 
   resolve:
     name: Résolution Python ${{ matrix.python }}

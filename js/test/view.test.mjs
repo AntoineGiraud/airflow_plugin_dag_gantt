@@ -7,21 +7,33 @@
  * test de rendu (`render.test.mjs`), mais celui-ci ne peut pas explorer les cas limites :
  * ex æquo de tri, filtre d'état unique, granularité `auto`, course entre une minute gelée
  * et un run en cours.
+ *
+ * Les dérivations prennent le **tableau de runs** (pas l'objet `data` renvoyé par l'API) :
+ * c'est exactement ce que le `useMemo` du conteneur capture et déclare comme dépendance.
  */
 import assert from 'node:assert/strict';
 import { BIN_OPTIONS } from '../src/lib/aggregation.js';
+import { DEFAULT_SORT, SORT_OPTIONS } from '../src/lib/constants.js';
+import { fmtClock, todayLocal } from '../src/lib/time.js';
 import {
+  binHint,
   buildGroupingInputs,
   buildItemsByDag,
   buildRows,
   buildTipIndex,
+  DEFAULT_BIN,
   filterRuns,
   hasLiveRuns,
   listStates,
   listTags,
   mergeLegendStates,
+  readInitialView,
   resolveBinMs,
   stateCounts,
+  summaryLabel,
+  summaryTitle,
+  viewToQuery,
+  windowChipTitle,
 } from '../src/lib/view.js';
 
 const DAY = '2026-11-10';
@@ -47,40 +59,39 @@ const runs = [
   mk('ALPHA', 3, { h: 11, tags: ['spark', 'nuit'] }), // DAG distinct, casse différente
   mk('beta', 1, { h: 8, state: 'running', dur: 0, tags: ['nuit'] }),
 ];
-const data = { runs, count: runs.length };
 
 /* ------------------------------- filtres ------------------------------- */
 
 // Signature positionnelle, calquée sur les variables d'état du composant :
-// filterRuns(data, nameFilter, tagFilter, stateFilter, stateSet).
+// filterRuns(runs, nameFilter, tagFilter, stateFilter, stateSet).
 const states = (sel) => [sel].flat();
 const setOf = (sel) => new Set(states(sel));
-assert.equal(filterRuns(data, '', '', [], null).length, 4, 'aucun filtre = tout');
-assert.equal(filterRuns(data, 'alp', '', [], null).length, 3, 'aiguille sur dag_id');
-assert.equal(filterRuns(data, 'RUN_BETA_001', '', [], null).length, 1, 'aiguille non sensible à la casse');
-assert.equal(filterRuns(data, '  ', '', [], null).length, 4, 'aiguille blanche = pas un filtre');
-assert.equal(filterRuns(data, '', 'nuit', [], null).length, 2, 'tag exact');
-assert.equal(filterRuns(data, '', '', states('failed'), setOf('failed')).length, 1, 'un état sélectionné');
-assert.equal(filterRuns(data, '', '', states(['failed', 'running']), setOf(['failed', 'running'])).length, 2, 'plusieurs états = OU');
-assert.equal(filterRuns(data, '', '', [], new Set(['failed'])).length, 4, 'sélection vide = pas de filtre (le set seul ne filtre pas)');
-assert.equal(filterRuns(data, 'alp', 'nuit', [], null).length, 1, 'filtres combinés = ET');
+assert.equal(filterRuns(runs, '', '', [], null).length, 4, 'aucun filtre = tout');
+assert.equal(filterRuns(runs, 'alp', '', [], null).length, 3, 'aiguille sur dag_id');
+assert.equal(filterRuns(runs, 'RUN_BETA_001', '', [], null).length, 1, 'aiguille non sensible à la casse');
+assert.equal(filterRuns(runs, '  ', '', [], null).length, 4, 'aiguille blanche = pas un filtre');
+assert.equal(filterRuns(runs, '', 'nuit', [], null).length, 2, 'tag exact');
+assert.equal(filterRuns(runs, '', '', states('failed'), setOf('failed')).length, 1, 'un état sélectionné');
+assert.equal(filterRuns(runs, '', '', states(['failed', 'running']), setOf(['failed', 'running'])).length, 2, 'plusieurs états = OU');
+assert.equal(filterRuns(runs, '', '', [], new Set(['failed'])).length, 4, 'sélection vide = pas de filtre (le set seul ne filtre pas)');
+assert.equal(filterRuns(runs, 'alp', 'nuit', [], null).length, 1, 'filtres combinés = ET');
 
 /* ------------------------------- compteurs par état ------------------------------- */
 
-const counts = stateCounts(data, '', '');
+const counts = stateCounts(runs, '', '');
 assert.deepEqual(counts, { success: 2, failed: 1, running: 1 }, 'répartition de la journée');
 // Ces comptes préfigurent ce que **chaque case** ajoutera ou retirera : ils intègrent les
 // autres filtres, mais jamais le filtre d'état.
-assert.deepEqual(stateCounts(data, '', 'nuit'), { running: 1, success: 1 }, 'comptes restreints au tag');
-assert.deepEqual(stateCounts(data, 'alp', ''), { success: 2, failed: 1 }, 'aiguille insensible à la casse : alpha + ALPHA');
+assert.deepEqual(stateCounts(runs, '', 'nuit'), { running: 1, success: 1 }, 'comptes restreints au tag');
+assert.deepEqual(stateCounts(runs, 'alp', ''), { success: 2, failed: 1 }, 'aiguille insensible à la casse : alpha + ALPHA');
 
 /* ------------------------------- tags & états connus ------------------------------- */
 
-assert.deepEqual(listTags(data), ['nuit', 'spark'], 'tags uniques triés');
-assert.deepEqual(listStates(data), ['queued', 'running', 'success', 'failed'].filter((s) => ['running', 'success', 'failed'].includes(s)), 'dans l\'ordre de la légende');
-assert.deepEqual(mergeLegendStates(listStates(data)), ['queued', 'running', 'success', 'failed'], 'la légende montre aussi un état absent de la journée');
-assert.equal(hasLiveRuns({ runs: [mk('z', 1)] }), false, 'rien en cours = pas de tick rapide');
-assert.equal(hasLiveRuns(data), true, 'un run running ou queued déclenche le tick de 5 s');
+assert.deepEqual(listTags(runs), ['nuit', 'spark'], 'tags uniques triés');
+assert.deepEqual(listStates(runs), ['queued', 'running', 'success', 'failed'].filter((s) => ['running', 'success', 'failed'].includes(s)), 'dans l\'ordre de la légende');
+assert.deepEqual(mergeLegendStates(listStates(runs)), ['queued', 'running', 'success', 'failed'], 'la légende montre aussi un état absent de la journée');
+assert.equal(hasLiveRuns([mk('z', 1)]), false, 'rien en cours = pas de tick rapide');
+assert.equal(hasLiveRuns(runs), true, 'un run running ou queued déclenche le tick de 5 s');
 
 /* ------------------------------- lignes par DAG ------------------------------- */
 
@@ -173,4 +184,106 @@ assert.equal(merged.mergedCount, 1, '2 runs, 1 barre = 1 fusionné');
 const index = buildTipIndex(merged.itemsByDag);
 assert.equal(index.get(items[0].key), items[0], 'l\'index du tooltip pointe sur le même objet');
 
-console.log('view.test.mjs : filtres, compteurs, lignes, granularité, buckets — ok');
+/* ------------------------------- URL partageable ⇄ vue ------------------------------- */
+
+// Une URL vide donne la vue par défaut, et RIEN d'autre : ces quatre valeurs sont ce que voit
+// un collègue à qui l'on envoie le lien sans paramètre.
+const empty = readInitialView(new URLSearchParams(''));
+assert.deepEqual(
+  empty,
+  {
+    date: todayLocal(),
+    nameFilter: '',
+    tagFilter: '',
+    stateFilter: [],
+    zoomAuto: true,
+    sortKey: DEFAULT_SORT,
+    bin: DEFAULT_BIN,
+    grouped: true,
+    stagesText: '',
+    collapsed: new Set(),
+  },
+  'URL vide = vue par défaut (zoom auto, groupé, agrégation auto)'
+);
+
+// Une URL chargée se relit champ par champ — dont l'état en multi-sélection et les groupes
+// repliés, tous deux portés par des listes séparées par des virgules.
+const loaded = readInitialView(
+  new URLSearchParams(
+    'date=2026-11-02&q= nuit &tag=nuit&state=failed,,running&sort=count&zoom=day&bin=15m&group=0&stages=collecte&collapsed=a,,b'
+  )
+);
+assert.equal(loaded.date, '2026-11-02', 'la date de l\'URL prime sur aujourd\'hui');
+assert.deepEqual(loaded.stateFilter, ['failed', 'running'], 'états : une virgule vide ne crée pas un état fantôme');
+assert.deepEqual([...loaded.collapsed], ['a', 'b'], 'groupes repliés relus comme un Set');
+assert.equal(loaded.zoomAuto, false, '?zoom=day = journée complète');
+assert.equal(loaded.grouped, false, '?group=0 = liste plate');
+assert.equal(loaded.bin, '15m', 'tranche fixe relue');
+
+// Valeur inconnue = repli sur le défaut, jamais une valeur qui traverserait jusqu'au sélecteur.
+assert.equal(readInitialView(new URLSearchParams('sort=nimporte-quoi')).sortKey, DEFAULT_SORT, 'tri inconnu = tri par défaut');
+assert.ok(
+  readInitialView(new URLSearchParams('sort=name')).sortKey === 'name' &&
+    SORT_OPTIONS.some((o) => o.value === 'name'),
+  'un tri connu passe'
+);
+assert.equal(readInitialView(new URLSearchParams('bin=99m')).bin, DEFAULT_BIN, 'tranche inconnue = auto');
+assert.ok(BIN_OPTIONS.some((o) => o.value === readInitialView(new URLSearchParams('bin=60m')).bin), 'tranche connue = conservée');
+
+// `viewToQuery` est l'inverse de `readInitialView` : une vue par défaut ne laisse **aucun**
+// paramètre dans l'URL (sinon le lien de partage ressemble à ?date=…&sort=first&bin=auto…). 
+assert.deepEqual(
+  viewToQuery(empty),
+  { date: '', q: '', tag: '', state: '', sort: '', zoom: '', bin: '', group: '', stages: '', collapsed: '' },
+  'vue par défaut = URL propre'
+);
+assert.deepEqual(viewToQuery(loaded), {
+  date: '2026-11-02',
+  q: 'nuit', // l'aiguille est tronquée avant d'être écrite
+  tag: 'nuit',
+  state: 'failed,running',
+  sort: 'count',
+  zoom: 'day',
+  bin: '15m',
+  group: '0',
+  stages: 'collecte',
+  collapsed: 'a,b',
+});
+// Aller/retour : ce qui a été écrit dans l'URL se relit à l'identique — à l'aiguille près,
+// qui repart déjà tronquée (`viewToQuery` la `trim` avant de l'écrire, pour une URL propre).
+const roundTripQuery = new URLSearchParams();
+Object.entries(viewToQuery(loaded))
+  .filter(([, v]) => v)
+  .forEach(([k, v]) => roundTripQuery.set(k, v));
+const roundTrip = readInitialView(roundTripQuery);
+assert.deepEqual(roundTrip, { ...loaded, nameFilter: 'nuit' }, 'écriture puis relecture de l\'URL redonne la même vue');
+// Et une seconde écriture ne change plus rien : la sync URL est un point fixe dès le 2e passage.
+assert.deepEqual(viewToQuery(roundTrip), viewToQuery(loaded), 'réécrire la même vue ne change pas l\'URL');
+
+/* ------------------------------- textes du ruban ------------------------------- */
+
+assert.ok(binHint('auto').includes('30 min maximum'), 'auto explique sa granularité');
+assert.equal(binHint('off'), 'Une barre par run : aucune agrégation.');
+assert.equal(binHint('15m'), 'Une barre par tranche de 15 min ; rouge dès qu\'un run du bucket a échoué.');
+assert.equal(summaryLabel(1, 0), '1 run', 'un seul run reste au singulier');
+assert.equal(summaryLabel(1270, 0), '1270 runs', 'sans fusion, rien de plus à dire');
+assert.equal(summaryLabel(1270, 1097), '1270 runs · 1097 fusionnés');
+assert.equal(
+  summaryTitle({ windowStart: DAY_START + 8 * H, windowSpan: 2 * H, zoomed: false, mergedCount: 0, binMs: 5 * M }),
+  `${fmtClock(DAY_START + 8 * H)} → ${fmtClock(DAY_START + 10 * H)} (2h 00m, journée complète)`,
+  'aucun fusion = la title ne parle pas de tranche'
+);
+// Les heures viennent de `fmtClock`, donc de la locale du navigateur : l'assertion les reprend
+// telles quelles, seule la **forme** du texte est vérifiée (sinon le test rouge selon la machine).
+assert.ok(
+  summaryTitle({ windowStart: DAY_START + 8 * H, windowSpan: 2 * H, zoomed: true, mergedCount: 3, binMs: 5 * M }).includes('· 3 runs fusionnés par tranche de 5 min'),
+  'des fusions = la tranche est nommée'
+);
+assert.ok(
+  summaryTitle({ windowStart: DAY_START + 8 * H, windowSpan: 2 * H, zoomed: true, mergedCount: 3, binMs: 5 * M }).includes('fenêtre ajustée aux runs filtrés'),
+  'zoom auto = la fenêtre le dit'
+);
+assert.ok(windowChipTitle({ windowStart: DAY_START + 8 * H, windowSpan: 2 * H, zoomAuto: true }).includes('afficher les 24 h'), 'le zoom auto propose la journée');
+assert.ok(windowChipTitle({ windowStart: DAY_START + 8 * H, windowSpan: 2 * H, zoomAuto: false }).includes('zoomer sur les runs filtrés'), 'la journée propose le zoom');
+
+console.log('view.test.mjs : filtres, compteurs, lignes, granularité, buckets, URL, textes — ok');

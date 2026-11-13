@@ -7,15 +7,21 @@
  * syntaxe et le charge comme module (vérifié en Node 26).
  */
 import assert from 'node:assert/strict';
+import { BAR_HEIGHT, ROW_HEIGHT } from '../src/lib/constants.js';
 import {
-  BIN_OPTIONS,
+  barGeometry,
   barHref,
-  packLanes,
-  parseBin,
+  barLabel,
+  barStyle,
+  barVisualProps,
+  BIN_OPTIONS,
+  bucketize,
+  isLinkable,
   autoBinMs,
   binLabel,
+  packLanes,
+  parseBin,
   worstState,
-  bucketize,
 } from '../src/lib/aggregation.js';
 
 const MIN = 60 * 1000;
@@ -328,6 +334,88 @@ it('barHref : dag_id et run_id echappes', () => {
   const odd = { ...run(1, at('14:01'), at('14:02'), 'failed'), dag_id: 'a b/c', run_id: 'manual__+1' };
   const [item] = bucketize([odd], DAY_START, 5 * MIN, NOW);
   assert.equal(barHref(item), '/dags/a%20b%2Fc/runs/manual__%2B1');
+});
+
+// ---------- logique de la barre (extraite de `Bar.jsx`, donc testable ici) ----------
+
+const DAY_WINDOW = { windowStart: DAY_START, windowSpan: DAY, chartWidth: 1000 };
+const bucketAt = (from, to, state = 'success') =>
+  bucketize([run(1, at(from), at(to), state), run(2, at(from) + MIN, at(to) + MIN, state)], DAY_START, 60 * MIN, NOW)[0];
+
+it('barGeometry : position et largeur en % de la journee', () => {
+  const geo = barGeometry({ startMs: at('12:00'), endMs: at('18:00') }, DAY_WINDOW);
+  assert.equal(geo.left, 50, '12 h sur 24 h = la moitie');
+  assert.equal(geo.width, 25, '6 h sur 24 h = un quart');
+  assert.equal(geo.widthPx, 250, 'et 250 px sur une zone de 1000 px');
+});
+
+it('barGeometry : plancher a 0,35 % pour rester survolable', () => {
+  const geo = barGeometry({ startMs: at('06:00'), endMs: at('06:01') }, DAY_WINDOW);
+  assert.equal(geo.width, 0.35, 'une minute sur 24 h ne se voit pas : on la rend visible');
+  assert.ok(geo.widthPx > 3, 'et assez large pour une souris');
+});
+
+it('barGeometry : ramene dans la zone, jamais avant', () => {
+  const before = barGeometry({ startMs: at('01:00'), endMs: at('02:00') }, { ...DAY_WINDOW, windowStart: at('01:30') });
+  assert.equal(before.left, 0, 'une barre commence jamais avant la zone');
+  assert.ok(before.width > 0 && before.width < 100, 'et garde une largeur positive');
+  const after = barGeometry({ startMs: at('01:00'), endMs: at('05:00') }, { ...DAY_WINDOW, windowSpan: 3 * HOUR });
+  assert.equal(after.left + after.width, 100, 'elle ne deborde pas non plus : le bord droit est borne');
+});
+
+it('barGeometry : run sans date ou mal ne = un point, pas un calcul negatif', () => {
+  const blind = barGeometry({}, DAY_WINDOW);
+  assert.equal(blind.startMs, DAY_WINDOW.windowStart, 'un item sans start se cale sur la fenetre');
+  assert.equal(blind.endMs, blind.startMs, 'et sans end, il ne s\'etire pas');
+  const reversed = barGeometry({ startMs: at('10:00'), endMs: at('09:00') }, DAY_WINDOW);
+  assert.equal(reversed.endMs, reversed.startMs, 'une fin avant le debut est ramenee au debut');
+});
+
+it('barGeometry : largeur inconnue = widthPx a null (seuil en %)', () => {
+  const geo = barGeometry({ startMs: at('12:00'), endMs: at('18:00') }, { windowStart: DAY_START, windowSpan: DAY, chartWidth: 0 });
+  assert.equal(geo.widthPx, null, 'pas encore mesure (useChartWidth) : on ne devine pas les px');
+});
+
+it('barLabel : le compte et la duree seulement si ca rentre', () => {
+  const item = bucketAt('12:00', '14:00'); // bucket 12:00 -> 14:01, 2 runs
+  assert.equal(item.count, 2, 'les deux runs sont bien fusionnes');
+  assert.equal(barLabel({ ...item, running: false }, barGeometry(item, DAY_WINDOW)), '2× · 2h 01m', 'large : le compte et la duree');
+  assert.equal(barLabel({ ...item, running: false }, barGeometry(item, { ...DAY_WINDOW, chartWidth: 600 })), '2×', 'etroit : le compte reste, la duree disparait');
+  assert.equal(barLabel({ ...item, running: false }, barGeometry(item, { ...DAY_WINDOW, chartWidth: 200 })), '', 'trop etroit : rien d\'imposable, on ne troncature pas');
+});
+
+it('barLabel : un run en cours marque ▶, meme dans une barre etroite', () => {
+  const short = { key: 'k', dagId: 'ALIVE', kind: 'bucket', state: 'running', count: 3, running: true, startMs: at('14:00'), endMs: at('14:04') };
+  assert.equal(barLabel(short, barGeometry(short, DAY_WINDOW)), '▶', '4 minutes = pas de place pour « 3× »');
+  const wide = barGeometry(short, { ...DAY_WINDOW, chartWidth: 60_000 });
+  assert.equal(barLabel(short, wide), '▶ 3× · 4m 0s', 'assez large : le ▶ est suivi d\'une espace');
+  assert.equal(barLabel({ ...short, running: false }, wide), '3× · 4m 0s', 'sans run en cours, pas d\'espace fantome');
+});
+
+it('barVisualProps : couleur de l\'etat, opacite, bordure du run en cours', () => {
+  const failed = barVisualProps({ state: 'failed' });
+  assert.equal(failed.bg, 'failed.solid', 'couleur = token du thème de l\'hote, jamais un hex');
+  assert.equal(failed.opacity, 1);
+  assert.equal(barVisualProps({ state: 'success' }).opacity, 0.9, 'une barre de succes se fond un peu');
+  assert.equal(barVisualProps({ state: null }).bg, 'gray.solid', 'etat inconnu = gris');
+  assert.equal(barVisualProps({ state: 'success', running: true }).border, '1px solid', 'un bucket contenant un run en cours se bordure');
+  assert.equal(barVisualProps({ state: 'success' }).border, 'none');
+});
+
+it('isLinkable : seule une barre utile en clic devient un lien', () => {
+  assert.equal(isLinkable({ state: 'success', count: 1 }), true, 'run unique = sa grille');
+  assert.equal(isLinkable({ state: 'failed', count: 9 }), true, 'echec, meme en bucket = les logs');
+  assert.equal(isLinkable({ state: 'success', count: 9 }), false, 'bucket reussi = muet (le tooltip suffit)');
+  assert.equal(isLinkable({ state: 'running', count: 9 }), false, 'bucket en cours non plus : pas de fausse affordance');
+});
+
+it('barStyle : lane = pas vertical, et display block pour un <a>', () => {
+  const item = { lane: 2, startMs: at('12:00'), endMs: at('13:00') };
+  const style = barStyle(item, barGeometry(item, DAY_WINDOW));
+  assert.equal(style.top, `${2 * ROW_HEIGHT}px`, 'la lane 2 est deux pas plus bas');
+  assert.equal(style.height, `${BAR_HEIGHT}px`, 'une barre fait toujours BAR_HEIGHT');
+  assert.equal(style.display, 'block', '<a> est inline : sans bloc, les % ne suivent pas');
+  assert.equal(barStyle({ ...item, lane: undefined }, barGeometry(item, DAY_WINDOW)).top, '0px', 'sans lane assignee, premiere lane');
 });
 
 console.log(`\naggregation.test.mjs : ${checks} tests passés`);

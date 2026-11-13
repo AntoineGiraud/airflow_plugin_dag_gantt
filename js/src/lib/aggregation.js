@@ -5,7 +5,14 @@
  * Règle : des runs d'un même DAG qui démarrent dans la même tranche (`binMs`)
  * sont fusionnés en une seule barre. Les bornes du bucket sont les **vraies**
  * dates des runs (pas les bords de la tranche) : la barre reste fidèle.
+ *
+ * Le fichier tient aussi la **logique de la barre** (`barGeometry`, `barLabel`,
+ * `barVisualProps`, `isLinkable`, à côté de `barHref` et `packLanes`) : ce sont des
+ * calculs, pas du rendu — ils sortent donc du composant `Bar` pour être vérifiés sous
+ * Node, ce que le composant ne peut pas être.
  */
+import { fmtDuration } from './time.js';
+import { BAR_HEIGHT, DEFAULT_COLOR, MIN_COUNT_PX, MIN_DUR_PX, ROW_HEIGHT, STATE_COLORS } from './constants.js';
 
 const MINUTE_MS = 60000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -211,6 +218,81 @@ export const barHref = (item, dayStartMs) => {
   const query = params.toString();
   return query ? `${listUrl}?${query}` : listUrl;
 };
+
+/**
+ * Géométrie d'une barre : position et largeur en **%** de la zone de temps, plus les px
+ * estimés. Un run sans date (`startMs`/`endMs` absents) ou mal né (fin < début) est ramené
+ * à un point : une barre ultra-fine plutôt qu'un calcul négatif qui casserait le rendu.
+ *
+ * `widthPx` vaut `null` tant que la largeur de la zone n'est pas mesurée (`useChartWidth`) :
+ * c'est ce qui oblige `barLabel` à un seuil approximatif en % pour la première peinture.
+ * `0,35 %` au plancher : une barre de quelques secondes doit rester **visible et survolable**.
+ */
+export const barGeometry = (item, { windowStart, windowSpan, chartWidth }) => {
+  const startMs = item.startMs == null ? windowStart : item.startMs;
+  const endMs = item.endMs == null || item.endMs < startMs ? startMs : item.endMs;
+  const left = Math.max(0, ((startMs - windowStart) / windowSpan) * 100);
+  const right = Math.min(100, ((endMs - windowStart) / windowSpan) * 100);
+  const width = Math.max(right - left, 0.35);
+  return {
+    startMs,
+    endMs,
+    left,
+    width,
+    // Label dans la barre sans mesure (ResizeObserver absent) : seuil approximatif.
+    widthPx: chartWidth ? (width / 100) * chartWidth : null,
+  };
+};
+
+/**
+ * Ce que la barre écrit en elle-même : `▶` si un run y tourne, le nombre de runs du bucket,
+ * la durée — chacun **seulement si ça rentre** (`MIN_COUNT_PX`, `MIN_DUR_PX`). Une barre de
+ * deux minutes vide est plus lisible qu'une barre tronquée en « 4m 1… ».
+ */
+export const barLabel = (item, geometry) => {
+  const { width, widthPx, startMs, endMs } = geometry;
+  const fits = (px) => (widthPx != null ? widthPx >= px : width >= 8);
+  const parts = [];
+  if (item.count > 1 && fits(MIN_COUNT_PX)) parts.push(`${item.count}×`);
+  if (fits(MIN_DUR_PX)) parts.push(fmtDuration(endMs - startMs));
+  return `${item.running ? '▶' : ''}${parts.length ? `${item.running ? ' ' : ''}${parts.join(' · ')}` : ''}`;
+};
+
+/**
+ * Apparence d'une barre : couleur de l'état **le plus grave** du bucket, opacité, bordure
+ * quand un run y tourne. Les couleurs sont des tokens du thème de l'hôte, jamais des hex.
+ */
+export const barVisualProps = (item) => ({
+  bg: STATE_COLORS[item.state] || DEFAULT_COLOR,
+  color: 'white',
+  borderRadius: '3px',
+  fontSize: '10px',
+  lineHeight: `${BAR_HEIGHT}px`,
+  px: 1,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  opacity: item.state && item.state !== 'success' ? 1 : 0.9,
+  border: item.running ? '1px solid' : 'none', // bucket contenant un run en cours
+  borderColor: 'running.solid',
+});
+
+/**
+ * Seule une barre **utile en clic** est un lien : un échec (y compris dans un bucket, pour
+ * aller voir les logs) ou un run unique (sa grille). Les buckets réussis restent muets :
+ * moins de `<a>` dans le DOM, pas de fausse affordance, et le tooltip donne déjà le détail.
+ */
+export const isLinkable = (item) => item.state === 'failed' || item.count === 1;
+
+/** Position absolue d'une barre dans sa ligne (`lane` = colonne verticale assignée par `packLanes`). */
+export const barStyle = (item, geometry) => ({
+  position: 'absolute',
+  top: `${(item.lane || 0) * ROW_HEIGHT}px`,
+  left: `${geometry.left}%`,
+  width: `${geometry.width}%`,
+  height: `${BAR_HEIGHT}px`,
+  // `<a>` est inline par défaut : sans bloc, la largeur/position en % ne suivent pas.
+  display: 'block',
+});
 
 /**
  * Fuseau : `runs` (triés par start, `rows` les trie déjà) -> items à dessiner.

@@ -32,6 +32,39 @@ const Field = ({ label = NBSP, title, children }) => (
   </VStack>
 );
 
+/* Navigation de journée : ⬅️ / date / ➡️. Le jour suivant reste interdit à partir d'aujourd'hui
+   — le Gantt n'a rien à montrer sur une journée qui n'a pas encore eu lieu. */
+const DateNav = ({ date, setDate }) => (
+  <HStack gap={1}>
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={() => setDate((d) => shiftDate(d, -1))}
+      title="Jour précédent"
+      aria-label="Jour précédent"
+    >
+      ⬅️
+    </Button>
+    <Input
+      type="date"
+      size="sm"
+      width="auto"
+      value={date}
+      onChange={(e) => setDate(e.target.value)}
+    />
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={() => setDate((d) => shiftDate(d, 1))}
+      disabled={!date || date >= todayLocal()}
+      title={date >= todayLocal() ? "Aujourd'hui : pas de date future" : 'Jour suivant'}
+      aria-label="Jour suivant"
+    >
+      ➡️
+    </Button>
+  </HStack>
+);
+
 /* Puce de filtre actif : libellé + valeur + ✕ qui remet la valeur à vide. Visible tant que
    le filtre est actif, masquée sinon — jamais démontée : une vue filtrée doit rester
    explicable même ruban replié. */
@@ -115,6 +148,166 @@ const StateChecks = ({ states, stateSet, counts, onToggle }) => {
   );
 };
 
+/* Panneau « Filtres » : ce qui **retire** des runs de la vue. `hidden` seulement, jamais
+   démonté — les contrôles gardent leur valeur et le test headless les retrouve. */
+const RibbonFiltersPanel = ({
+  visible,
+  nameFilter,
+  setNameFilter,
+  tagFilter,
+  setTagFilter,
+  allTags,
+  legendStates,
+  stateSet,
+  stateCounts,
+  toggleState,
+  hasActiveFilters,
+  resetFilters,
+}) => (
+  <Flex
+    data-gk-ui="panel-filters"
+    role="tabpanel"
+    data-visible={visible ? 'yes' : 'no'}
+    hidden={!visible}
+    wrap="wrap"
+    gap={4}
+    alignItems="flex-start"
+    px={3}
+    py={2}
+    borderWidth="1px"
+    borderColor="border.muted"
+    borderBottomColor="border.default"
+    borderRadius="md"
+    bg="bg.subtle"
+  >
+    <Field label="Nom de DAG / run">
+      <Input
+        placeholder="Filtrer par nom de DAG ou run…"
+        size="sm"
+        maxW="240px"
+        value={nameFilter}
+        onChange={(e) => setNameFilter(e.target.value)}
+      />
+    </Field>
+    <Field label="Tag">
+      <Select value={tagFilter} onChange={setTagFilter} options={allTags} placeholder="Tous les tags" />
+    </Field>
+    <Field label="États (cumulables)" title="Les mêmes que la légende cliquable en bas du Gantt — les deux sont synchronisés.">
+      <StateChecks states={legendStates} stateSet={stateSet} counts={stateCounts} onToggle={toggleState} />
+    </Field>
+    <Spacer />
+    <Field>
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={!hasActiveFilters}
+        onClick={resetFilters}
+        title="Remettre à vide nom, tag, états et étapes (la date est conservée)"
+      >
+        ✕ Réinitialiser les filtres
+      </Button>
+    </Field>
+  </Flex>
+);
+
+/* Panneau « Affichage » : ce qui change la **façon de dessiner**, jamais ce qui est dessiné.
+   Les étapes y vivent parce qu'elles ne filtrent rien : elles disent **comment** les DAGs
+   sont groupés (quel tag devient le groupe, et dans quel ordre) — ni dans les filtres, ni
+   dans les puces retirables. */
+const RibbonViewPanel = ({
+  visible,
+  sortKey,
+  setSortKey,
+  bin,
+  setBin,
+  binTitle,
+  zoomAuto,
+  setZoomAuto,
+  grouped,
+  setGrouped,
+  showCollapseAll,
+  allCollapsed,
+  toggleCollapseAll,
+  stagesText,
+  setStagesText,
+  onRefresh,
+}) => (
+  <Flex
+    data-gk-ui="panel-view"
+    role="tabpanel"
+    data-visible={visible ? 'yes' : 'no'}
+    hidden={!visible}
+    wrap="wrap"
+    gap={4}
+    alignItems="flex-start"
+    px={3}
+    py={2}
+    borderWidth="1px"
+    borderColor="border.muted"
+    borderBottomColor="border.default"
+    borderRadius="md"
+    bg="bg.subtle"
+  >
+    <Field label="Ordre des lignes">
+      <Select value={sortKey} onChange={setSortKey} options={SORT_OPTIONS} />
+    </Field>
+    <Field label="Agrégation des runs">
+      <Select value={bin} onChange={setBin} options={BIN_OPTIONS} title={binTitle} />
+    </Field>
+    <Field label="Fenêtre">
+      <Button
+        size="sm"
+        variant={zoomAuto ? 'solid' : 'outline'}
+        onClick={() => setZoomAuto((z) => !z)}
+        title="Zoom sur les runs filtres (3 h mini) / journee complete"
+      >
+        {zoomAuto ? '🔍 Zoom auto' : '🕐 Journée complète'}
+      </Button>
+    </Field>
+    <Field label="Regroupement">
+      <HStack gap={1}>
+        <Button
+          size="sm"
+          variant={grouped ? 'solid' : 'outline'}
+          onClick={() => setGrouped((g) => !g)}
+          title="Regrouper les DAGs par tag principal / liste plate"
+        >
+          {grouped ? '🗂 Groupes' : '📄 Liste'}
+        </Button>
+        {showCollapseAll && (
+          <Button size="sm" variant="ghost" onClick={toggleCollapseAll}>
+            {allCollapsed ? '▸ Tout déplier' : '▾ Tout replier'}
+          </Button>
+        )}
+      </HStack>
+    </Field>
+    <Field label="Ordre des groupes (tags, par priorité)">
+      <Input
+        data-gk-ui="stages-input"
+        placeholder="ex. collecte, normalisation, export"
+        size="sm"
+        maxW="220px"
+        value={stagesText}
+        onChange={(e) => setStagesText(e.target.value)}
+        title="Ex. collecte, normalisation, raffinement, export — le tag principal (donc le groupe) est le premier de cette liste présent sur le DAG. Vide = détection automatique par fréquence. Ne filtre rien : ça ne change que l'ordre et l'appartenance des groupes."
+      />
+    </Field>
+    <Spacer />
+    <Field>
+      {/* `data-gk-ui` : sélecteur stable pour les tests, sans rapport avec `data-gk` (les barres). */}
+      <Button
+        size="sm"
+        variant="outline"
+        data-gk-ui="refresh"
+        onClick={onRefresh}
+        title="Recharger les runs de la journée (sinon rafraîchissement auto toutes les 30 s)"
+      >
+        ⟳ Rafraîchir
+      </Button>
+    </Field>
+  </Flex>
+);
+
 export const ControlRibbon = ({
   ribbon,
   date,
@@ -161,34 +354,7 @@ export const ControlRibbon = ({
       {/* Ligne permanente : titre, date, onglets, statut — visible même ruban replié. */}
       <HStack gap={3} flexWrap="wrap">
         <Text fontSize="xl" fontWeight="bold">📊 Global Dag Gantt</Text>
-        <HStack gap={1}>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setDate((d) => shiftDate(d, -1))}
-            title="Jour précédent"
-            aria-label="Jour précédent"
-          >
-            ⬅️
-          </Button>
-          <Input
-            type="date"
-            size="sm"
-            width="auto"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-          />
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setDate((d) => shiftDate(d, 1))}
-            disabled={!date || date >= todayLocal()}
-            title={date >= todayLocal() ? "Aujourd'hui : pas de date future" : 'Jour suivant'}
-            aria-label="Jour suivant"
-          >
-            ➡️
-          </Button>
-        </HStack>
+        <DateNav date={date} setDate={setDate} />
         {/* Onglets fabriqués avec les composants déjà sûrs de l'hôte (pas de Tabs
             Chakra dont la présence n'est pas garantie — même garde-fou que NativeSelect). */}
         <HStack gap={1} role="tablist" data-gk-ui="tabs" aria-label="Catégories de contrôles">
@@ -258,134 +424,45 @@ export const ControlRibbon = ({
         </Text>
       </HStack>
 
-      {/* Panneau : fond `bg.subtle` (gray.50 / gray.950) pour le détacher de la page, bord
+      {/* Panneaux : fond `bg.subtle` (gray.50 / gray.950) pour le détacher de la page, bord
           `border.muted` et **arête basse** `border.default` (gray.200 / gray.800) — le liseré
           demandé, en tokens : un #ddd en dur ferait une tache en thème sombre. Pas d'ombre :
           `boxShadow` rend un dégradé bien plus lourd que le trait attendu (retour utilisateur).
           Tokens vérifiés dans le thème de l'hôte (bundle UI : border.{subtle,muted,DEFAULT,
           emphasized} = gray.50/100/200/… selon le mode). */}
-      <Flex
-        data-gk-ui="panel-filters"
-        role="tabpanel"
-        data-visible={ribbon.open && ribbon.tab === 'filters' ? 'yes' : 'no'}
-        hidden={!(ribbon.open && ribbon.tab === 'filters')}
-        wrap="wrap"
-        gap={4}
-        alignItems="flex-start"
-        px={3}
-        py={2}
-        borderWidth="1px"
-        borderColor="border.muted"
-        borderBottomColor="border.default"
-        borderRadius="md"
-        bg="bg.subtle"
-      >
-        <Field label="Nom de DAG / run">
-          <Input
-            placeholder="Filtrer par nom de DAG ou run…"
-            size="sm"
-            maxW="240px"
-            value={nameFilter}
-            onChange={(e) => setNameFilter(e.target.value)}
-          />
-        </Field>
-        <Field label="Tag">
-          <Select value={tagFilter} onChange={setTagFilter} options={allTags} placeholder="Tous les tags" />
-        </Field>
-        <Field label="États (cumulables)" title="Les mêmes que la légende cliquable en bas du Gantt — les deux sont synchronisés.">
-          <StateChecks states={legendStates} stateSet={stateSet} counts={stateCounts} onToggle={toggleState} />
-        </Field>
-        <Spacer />
-        <Field>
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={!hasActiveFilters}
-            onClick={resetFilters}
-            title="Remettre à vide nom, tag, états et étapes (la date est conservée)"
-          >
-            ✕ Réinitialiser les filtres
-          </Button>
-        </Field>
-      </Flex>
+      <RibbonFiltersPanel
+        visible={ribbon.open && ribbon.tab === 'filters'}
+        nameFilter={nameFilter}
+        setNameFilter={setNameFilter}
+        tagFilter={tagFilter}
+        setTagFilter={setTagFilter}
+        allTags={allTags}
+        legendStates={legendStates}
+        stateSet={stateSet}
+        stateCounts={stateCounts}
+        toggleState={toggleState}
+        hasActiveFilters={hasActiveFilters}
+        resetFilters={resetFilters}
+      />
 
-      <Flex
-        data-gk-ui="panel-view"
-        role="tabpanel"
-        data-visible={ribbon.open && ribbon.tab === 'view' ? 'yes' : 'no'}
-        hidden={!(ribbon.open && ribbon.tab === 'view')}
-        wrap="wrap"
-        gap={4}
-        alignItems="flex-start"
-        px={3}
-        py={2}
-        borderWidth="1px"
-        borderColor="border.muted"
-        borderBottomColor="border.default"
-        borderRadius="md"
-        bg="bg.subtle"
-      >
-        <Field label="Ordre des lignes">
-          <Select value={sortKey} onChange={setSortKey} options={SORT_OPTIONS} />
-        </Field>
-        <Field label="Agrégation des runs">
-          <Select value={bin} onChange={setBin} options={BIN_OPTIONS} title={binTitle} />
-        </Field>
-        <Field label="Fenêtre">
-          <Button
-            size="sm"
-            variant={zoomAuto ? 'solid' : 'outline'}
-            onClick={() => setZoomAuto((z) => !z)}
-            title="Zoom sur les runs filtres (3 h mini) / journee complete"
-          >
-            {zoomAuto ? '🔍 Zoom auto' : '🕐 Journée complète'}
-          </Button>
-        </Field>
-        <Field label="Regroupement">
-          <HStack gap={1}>
-            <Button
-              size="sm"
-              variant={grouped ? 'solid' : 'outline'}
-              onClick={() => setGrouped((g) => !g)}
-              title="Regrouper les DAGs par tag principal / liste plate"
-            >
-              {grouped ? '🗂 Groupes' : '📄 Liste'}
-            </Button>
-            {showCollapseAll && (
-              <Button size="sm" variant="ghost" onClick={toggleCollapseAll}>
-                {allCollapsed ? '▸ Tout déplier' : '▾ Tout replier'}
-              </Button>
-            )}
-          </HStack>
-        </Field>
-        {/* Les étapes ne filtrent rien : elles disent **comment** les DAGs sont groupés
-            (quel tag devient le groupe, et dans quel ordre). Leur place est donc ici, à
-            côté du regroupement — ni dans les filtres, ni dans les puces retirables. */}
-        <Field label="Ordre des groupes (tags, par priorité)">
-          <Input
-            data-gk-ui="stages-input"
-            placeholder="ex. collecte, normalisation, export"
-            size="sm"
-            maxW="220px"
-            value={stagesText}
-            onChange={(e) => setStagesText(e.target.value)}
-            title="Ex. collecte, normalisation, raffinement, export — le tag principal (donc le groupe) est le premier de cette liste présent sur le DAG. Vide = détection automatique par fréquence. Ne filtre rien : ça ne change que l'ordre et l'appartenance des groupes."
-          />
-        </Field>
-        <Spacer />
-        <Field>
-          {/* `data-gk-ui` : sélecteur stable pour les tests, sans rapport avec `data-gk` (les barres). */}
-          <Button
-            size="sm"
-            variant="outline"
-            data-gk-ui="refresh"
-            onClick={onRefresh}
-            title="Recharger les runs de la journée (sinon rafraîchissement auto toutes les 30 s)"
-          >
-            ⟳ Rafraîchir
-          </Button>
-        </Field>
-      </Flex>
+      <RibbonViewPanel
+        visible={ribbon.open && ribbon.tab === 'view'}
+        sortKey={sortKey}
+        setSortKey={setSortKey}
+        bin={bin}
+        setBin={setBin}
+        binTitle={binTitle}
+        zoomAuto={zoomAuto}
+        setZoomAuto={setZoomAuto}
+        grouped={grouped}
+        setGrouped={setGrouped}
+        showCollapseAll={showCollapseAll}
+        allCollapsed={allCollapsed}
+        toggleCollapseAll={toggleCollapseAll}
+        stagesText={stagesText}
+        setStagesText={setStagesText}
+        onRefresh={onRefresh}
+      />
 
       {error && (
         <Box bg="failed.surface" p={3} borderRadius="md">

@@ -17,3 +17,17 @@ export const { Box, Flex, HStack, VStack, Text, Input, Button, Badge, Spacer } =
 export const HasNativeSelect = Boolean(Chakra.NativeSelectRoot && Chakra.NativeSelectField);
 export const HasNavigate = Boolean(Router && typeof Router.useNavigate === 'function');
 export const HasSearchParams = Boolean(Router && typeof Router.useSearchParams === 'function');
+
+/**
+ * Le hook de navigation est choisi **ici**, pas dans un composant.
+ *
+ * Un hook appelé dans une condition (`HasNavigate ? Router.useNavigate() : null`) ferait
+ * varier le nombre de hooks vus par React entre deux rendus s'il arrivait que la condition
+ * tourne : React attacherait alors un état au mauvais hook. Un `?:` de module ne tourne
+ * qu'une fois, à l'évaluation de ce fichier — l'ordre des hooks est donc le même à chaque
+ * rendu, **par construction**.
+ *
+ * Sans `useNavigate` sur l'hôte, `navigate` vaut `null` : les `<a>` gardent leur comportement
+ * natif (chargement complet), et le gestionnaire de clic délégué n'a rien à intercepter.
+ */
+export const useNavigateSafe = HasNavigate ? Router.useNavigate : () => null;

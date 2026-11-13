@@ -175,6 +175,17 @@ Airflow qui remonte le widget à chaque navigation, donc un refresh à 1,2 s vau
 un webpack-dev-server du poste dupliquerait une **seconde** instance de React dans la page (les
 `externals` viennent de l'hôte, §2.3). Le vrai goulot reste le restart Python : 8,5 s, pas 2 minutes.
 
+> ⚠️ Conséquence vérifiée au `MutationObserver` (plan [`20261112_03`](plans/20261112_03_ruban-referme-par-l-hote.md)) :
+> l'hôte recrée le composant **quand ça l'arrange**, pas seulement à la navigation — un panneau
+> d'interface ouvert dans un `useState` local se refermait donc « tout seul » au premier clic après
+> un `ctrl+R`. Loi qui en découle : **tout état non partagé ne doit pas vivre dans le composant**.
+> C'est ce que font `hooks/useRibbon.js` (onglet ouvert, store de module) et `hooks/useRuns.js`
+> (runs des dernières journées, cache LRU de 5 jours) : au remontage, le Gantt se redessine depuis
+> la mémoire et se rafraîchit en tâche de fond, au lieu de faire défiler « Loading… » — le « hic-up »
+> visible. Même gain sur le ⬅️/➡️ : une journée déjà vue revient instantanément. Et `useUrlSync`
+> n'écrit plus dans l'URL au montage, pour ne pas offrir une navigation — donc un remontage — à
+> l'hôte pour rien.
+
 > ⚠️ `js`, `watch` et `py` écrivent **dans le conteneur** : c'est **jetable**. Un `astro dev
 > restart`/`kill` ou un rebuild remet la wheel d'origine — d'où `./dev.sh full` avant de committer.
 > Cas tordu vérifié : si le dernier `dev.sh js` arrive **après** le dernier `./build.sh`, le restart
@@ -198,7 +209,7 @@ hatch_build.py                    hook : câble js/dist → src/airflow_dag_gant
 build.sh                          purge dist/ + bun run build + uv build --wheel → dist/*.whl
 dev.sh                            la loop courte, ci-dessus
 Dockerfile                        runtime Astro + pip install de la wheel LOCALE (valide l'entry point)
-.github/workflows/ci.yml          lint + résolution 3.12/3.13/3.14 + build & tests (Python 3.14)
+.github/workflows/ci.yml          lint py + santé React + résolution 3.12/3.13/3.14 + build & tests (py 3.14)
 src/airflow_dag_gantt/{plugin,api}.py   DagGanttPlugin (entry point) + app FastAPI/SQLAlchemy
 src/airflow_dag_gantt/static/     le bundle, copié au build (gitignoré)
 js/                               sources React (webpack + bun, externals globalThis)
@@ -210,7 +221,8 @@ js/                               sources React (webpack + bun, externals global
   src/hooks/                      logistique : `useRuns` (fetch + refresh + horloge),
                                    `useChartWidth` (ResizeObserver), `useHoverTip` (tooltip
                                    délégué), `useUrlSync` (URL partageable), `useRibbon` (onglets)
-  src/components/                 rendu : `Bar`, `DagRow`, `GroupHeader`, `TimeScale`,
+  src/components/                 rendu : `GanttChart` (chargement / vide / gantt groupé ou à plat),
+                                   `Bar`, `DagRow`, `GroupHeader`, `TimeScale`,
                                    `StateLegend`, `HoverTip`, `Select`, `ControlRibbon`
   src/DagGanttWidget.jsx          le **conteneur** : état de la vue, `useMemo` de dérivation,
                                    assemblage (l'état vit là, les composants reçoivent des props)
@@ -222,7 +234,8 @@ plans/                            plans d'architecture (dont les choix de distri
 ### 3.4 Tests
 
 ```bash
-cd js && bun install && bun run test && bun run test:dom && cd ..   # ~120 assertions JS, ~2 s
+cd js && bun install && bun run test && bun run test:dom && cd ..   # ~270 assertions JS, ~2 s
+bunx react-doctor@0.9.22          # santé du front : score + pièges React (0,4 s à chaud, 3 s à froid)
 ./build.sh
 uv venv .venv && uv pip install --python .venv/bin/python dist/*.whl pytest httpx
 AIRFLOW_HOME=$PWD/.airflow-home .venv/bin/airflow db migrate    # 2 s sur sqlite
@@ -234,12 +247,12 @@ Côté JS, deux étages, parce qu'ils ne prouvent pas la même chose :
 - **`bun run test`** — quatre fichiers sur `js/src/lib/`, la partie du front testable **sans
   navigateur ni React** (zéro dépendance ; `node js/test/xxx.test.mjs` marche aussi, Node ≥ 23
   détecte l'ESM du `.js`, à un avertissement `package.json#type` près) :
-  `aggregation.test.mjs` (30 assertions : ce qui est fusionné, la couleur d'un bucket, ses bornes,
-  son lien), `time.test.mjs` (formats, fenêtre auto/journée, plancher de 3 h, graduations alignées
-  sur les heures rondes), `grouping.test.mjs` (tag principal, étapes prioritaires, « autre » en
-  dernier), `view.test.mjs` (filtres, compteurs hors état, tri des lignes, granularité `auto`,
-  runs fusionnés dans la même tranche).
-- **`bun run test:dom`** — `js/test/render.test.mjs` monte **le vrai composant** dans un DOM
+  `aggregation.test.mjs` (40 tests : ce qui est fusionné, la couleur d'un bucket, ses bornes,
+  son lien, et désormais la **géométrie et le libellé d'une barre**), `time.test.mjs` (formats,
+  fenêtre auto/journée, plancher de 3 h, graduations alignées sur les heures rondes),
+  `grouping.test.mjs` (tag principal, étapes prioritaires, « autre » en dernier),
+  `view.test.mjs` (filtres, compteurs hors état, tri des lignes, granularité `auto`, runs
+  fusionnés dans la même tranche, et l'**aller/retour URL ⇄ vue**).
 - **`bun run test:dom`** — `js/test/render.test.mjs` monte **le vrai composant** dans un DOM
   (happy-dom, seule dév-dependance ajoutée pour ça ; la wheel ne change pas) sur **1127 runs** et
   compte ce qui est rendu : `bin=off` → 1127 barres, buckets 5 min → **170**, auto → **30**, un seul
@@ -254,6 +267,21 @@ sans `DAG_GANTT_JS_DIR` et, surtout, ne teste pas l'artefact livré) ; `httpx`, 
 métadatabase, sans quoi `test_api_runs_contract` se skip (il sonde la vraie table `dag_run`) — d'où
 le `db migrate` et le `-rs` qui garde les skips visibles.
 
+**Le scan `react-doctor`** ([`js/package.json`](js/package.json), projet détecté sur `js/`) ne teste
+pas le comportement : il relit le code comme le ferait un relecteur React, et attrape ce que les
+tests laissent passer — un hook appelé dans une condition, un `useMemo` dont la dépendance est
+oubliée (écran figé sur des données périmées, **sans erreur en console**), un `useState(f())` qui
+recalcule à chaque rendu, une fonction qui sait trop de choses à la fois. Lancé depuis `js/` :
+
+```bash
+bunx react-doctor@0.9.22 --verbose  # 0.9.22 (la version du hook et de la CI) : 29 fichiers, ~40 ms de scan
+```
+
+Ce qu'il reste à savoir quand il grogne : `why src/Fichier.jsx:42` explique **pourquoi** la règle a
+tiré à cet endroit précis, et `rules explain <règle>` renvoie la recette de correction canonique.
+La sévérité qui rougit est écrite dans le hook et dans la CI (§3.5) : les fautes de type « Bugs »
+bloquent, les avertissements restent des avis tant qu'il en reste un.
+
 ### 3.5 `prek` : les mêmes contrôles qu'en CI, avant le commit et avant le push
 
 [`.pre-commit-config.yaml`](.pre-commit-config.yaml), lu par [prek](https://github.com/j178/prek)
@@ -265,6 +293,7 @@ simples équivalents :
 | `ruff-check`, `ruff-format` | `uvx ruff@0.16.1 check .` puis `format --check .` (job `lint` de la CI) | commit |
 | `js-tests` | `bun run --cwd js test` — tests purs de `js/src/lib/` (agrégation, temps/fenêtre, tags/groupes, dérivations) | commit, si `js/` change |
 | `js-tests-dom` | `bun run --cwd js test:dom` — le composant monté sur 1127 runs dans un DOM | idem |
+| `js-react-doctor` | `bunx -y react-doctor@0.9.22 --staged --no-score --no-supply-chain` — santé React de l'index seulement (job `react-doctor` de la CI) | idem |
 | `js-lockfile` | `bun install --cwd js --frozen-lockfile` — `bun.lock` cohérent avec `package.json` | idem |
 | `js-bundle` | `bun run --cwd js build` — le bundle réellement livré | idem |
 | `wheel-build` | `./build.sh` — bundle **puis** wheel | `pre-push` + `manual` |
@@ -286,6 +315,17 @@ Deux choix valent l'explication :
   donc aucun hook amont à cloner, pas de redescente réseau à chaque commit. Et `pass_filenames: false`
   partout : ces commandes portent sur le dépôt, passer les noms en argument tromperait webpack (qui
   les prendrait pour des points d'entrée).
+- **`react-doctor` est la seule exception au « zéro réseau »**, et elle est mesurée : `--staged` ne
+  scanne que l'index (**0,4 s une fois le paquet en cache bun**, 3 s la première fois d'une journée)
+  et **sort en 0 quand aucun fichier JS n'est indexé** — un commit de markdown ne le paie pas.
+  `bunx` est choisi plutôt que `npx` parce que bun est déjà l'outil du dépôt (§3.1, `./build.sh`,
+  tous les hooks JS) et que le job CI lance la même commande ; `npx` mesurait 1,5 s à chaud et
+  13 s à froid sur le même projet. Si l'aller-retour au registre devient agaçant, la sortie propre
+  est de passer `react-doctor` en `devDependency` de `js/` (`bunx react-doctor --staged`, version
+  verrouillée par `bun.lock`, hors ligne). Le hook est
+  bloquant sur les **erreurs** seulement (`--blocking error`), exactement comme le job CI — les
+  avertissements s'affichent sans empêcher le commit, et on durcira en `warning` le jour où le front
+  n'aura plus rien à signaler.
 
 La CI garde la main : les hooks accélèrent la boucle locale, ils ne **prouvent** rien — seule la wheel
 construite en CI est installée (§4.2).
