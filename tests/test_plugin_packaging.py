@@ -1,4 +1,4 @@
-"""Tests de packaging du paquet `airflow-dag-gantt`.
+"""Tests de packaging du paquet `airflow-dag-gantt-d2b` (module importé `airflow_dag_gantt`).
 
 Conventions d'exécution :
 
@@ -211,11 +211,15 @@ def test_version_matches_the_installed_distribution():
     `__version__` se lit dans les métadonnées (`importlib.metadata`) : le test n'a de sens que
     comme garde-fou contre un retour d'une constante écrite à la main, qui divergerait du tag
     dès la release suivante (le log de `on_load` et le wheel raconteraient deux histoires).
+
+    Le nom est lu dans le pyproject plutôt qu'écrit ici : `__init__.py` en porte un littéral
+    séparé, et une divergence d'un seul côté donnerait `0.0.0+unknown` **sans erreur**.
     """
     import airflow_dag_gantt
 
+    published_name = tomllib.loads(PYPROJECT.read_text("utf-8"))["project"]["name"]
     try:
-        installed = version("airflow-dag-gantt")
+        installed = version(published_name)
     except PackageNotFoundError:
-        pytest.skip("paquet non installé : rien à comparer à __version__")
+        pytest.skip(f"paquet `{published_name}` non installé : rien à comparer à __version__")
     assert airflow_dag_gantt.__version__ == installed

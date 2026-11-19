@@ -1,5 +1,7 @@
 [project]
-name = "airflow-dag-gantt"
+# Nom publié : `airflow-dag-gantt` est pris sur PyPI public (donc servi par `pythonproxy`) → le
+# suffixe `-d2b` ferme la dependency confusion. Lui seul le porte : import, entry point, URL.
+name = "airflow-dag-gantt-d2b"
 # La version vient du tag git (§ [tool.hatch.version] plus bas) : un champ `version` statique
 # ici ferait échouer hatchling (`Metadata field 'version' cannot be both statically defined and
 # listed in project.dynamic`) donc `uv lock`, `uv build` et tous les jobs qui en découlent.

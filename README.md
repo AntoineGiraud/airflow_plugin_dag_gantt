@@ -358,8 +358,8 @@ dossier — non versionné et restart à chaque changement.)
 ### 4.2 Builder, installer
 
 ```bash
-./build.sh    # → dist/airflow_dag_gantt-0.4.0-py3-none-any.whl  (LA seule wheel de dist/)
-uv pip install --no-deps ./dist/airflow_dag_gantt-0.4.0-py3-none-any.whl
+./build.sh    # → dist/airflow_dag_gantt_d2b-0.4.0-py3-none-any.whl  (LA seule wheel de dist/)
+uv pip install --no-deps ./dist/airflow_dag_gantt_d2b-0.4.0-py3-none-any.whl
 ```
 
 Quatre détails qui font la différence :
@@ -375,16 +375,18 @@ Quatre détails qui font la différence :
 - `build.sh` **purge `dist/*.whl`** : avec deux wheels, le `pip install …-*.whl` du `Dockerfile`
   reçoit deux arguments et le build Astro casse. Piège vu, pas théorique, juste après un bump.
 
-> ⚠️ **`pip install airflow-dag-gantt` n'est pas une commande de ce projet.** Sur PyPI public, ce nom
-> appartient à **un autre plugin** (un autre Gantt Airflow 3, sans rapport). Donc : ne jamais
-> installer ce nom depuis PyPI, et ne jamais mélanger `--extra-index-url` vers PyPI public avec un
-> index interne publiant le même nom — c'est la [*dependency confusion*][dep-confusion] manuscrite.
+> ⚠️ **Le nom publié est `airflow-dag-gantt-d2b`.** `airflow-dag-gantt`, sans suffixe, appartient à
+> **un autre plugin** (un autre Gantt Airflow 3, sans rapport) sur PyPI public, donc servi par
+> `pythonproxy`. Donc : ne jamais installer ce nom **sans** le suffixe, et ne jamais mélanger
+> `--extra-index-url` vers PyPI public avec un index interne publiant le même nom — c'est la
+> [*dependency confusion*][dep-confusion] manuscrite. Le suffixe n'existe qu'au niveau du nom publié :
+> le module s'importe toujours `airflow_dag_gantt`, l'entry point reste `dag_gantt`.
 
 Diagnostic à lancer **dans le pod qui affiche l'UI** :
 
 ```bash
 airflow plugins --verbose
-# dag_gantt | … | source : airflow-dag-gantt==0.4.0: EntryPoint(name='dag_gantt', …)  ✅
+# dag_gantt | … | source : airflow-dag-gantt-d2b==0.4.0: EntryPoint(name='dag_gantt', …)  ✅
 #                    (et surtout PAS de $PLUGINS_FOLDER/dag_gantt_plugin.py)
 ```
 
@@ -394,7 +396,7 @@ airflow plugins --verbose
 FROM astrocrpublic.azurecr.io/runtime:3.3-12
 COPY dist/ /tmp/plugin-dist/
 USER root                     # site-packages n'est pas writable par astro (uid 50000)
-RUN pip install --no-cache-dir /tmp/plugin-dist/airflow_dag_gantt-*.whl && rm -rf /tmp/plugin-dist
+RUN pip install --no-cache-dir /tmp/plugin-dist/airflow_dag_gantt_d2b-*.whl && rm -rf /tmp/plugin-dist
 USER astro
 ```
 
@@ -413,7 +415,7 @@ besoin d'aucun egress.
 
 | Symptôme | Cause probable | Vérifier |
 | --- | --- | --- |
-| `airflow plugins` ne liste pas `dag_gantt` | wheel absente de **ce** pod | `pip show airflow-dag-gantt` |
+| `airflow plugins` ne liste pas `dag_gantt` | wheel absente de **ce** pod | `pip show airflow-dag-gantt-d2b` |
 | listé, mais page vide / bundle 404 | `static/` hors de la wheel, ou `BUNDLE_PATH` mal pointé | `python -c "import airflow_dag_gantt as p,pathlib;print(list((pathlib.Path(p.__file__).parent/'static').iterdir()))"` |
 | entrée de menu absente | `lazy_load_plugins=True` **ou** `react_apps[0].name` ≠ clé `globalThis` (`'Dag Gantt'`) | `airflow config get-value core lazy_load_plugins`, console du bundle |
 | un `plugins/*.py` résiduel **éclipse** le paquet | **premier nom gagné** | `airflow plugins --verbose` montre la source gagnante → supprimer le résidu |
@@ -427,11 +429,11 @@ Ce dépôt est la maison d'un plugin, **pas d'une plateforme**. Hors POC, et ass
 
 - **publication vers un index partagé** : la CI GitLab **publie** (composant semantic-release : tag
   sans `v` → wheel → registre PyPI **du projet** GitLab), mais le seul consommateur du plugin reste la
-  propre image du projet, via `COPY dist/`. Ce qui reste hors POC : la cible **Artifactory** (le nom
-  `airflow-dag-gantt` est déjà pris sur PyPI public et servi par `pythonproxy`, donc un canal partagé
-  suppose un `pypi-local` dédié et un autre nom) et ses gardes (attestations SLSA, immutability,
-  Trusted Publishing, environment à revue humaine). La chaîne a été conçue, chiffrée en coûts et en
-  risques, puis écartée : **recette complète en annexe A** de
+  propre image du projet, via `COPY dist/`. Ce qui reste hors POC : la cible **Artifactory** (la prise
+  de nom sur PyPI public, servie par `pythonproxy`, est écartée par le suffixe `-d2b` du nom publié ;
+  un canal partagé suppose quand même un `pypi-local` dédié) et ses gardes (attestations SLSA,
+  immutability, Trusted Publishing, environment à revue humaine). La chaîne a été conçue, chiffrée en
+  coûts et en risques, puis écartée : **recette complète en annexe A** de
   `plans/20261109_03_python-313-314-et-release-github.md` (tag → wheel → artefact épinglé par
   `#sha256=` → attestations).
 - **Dépendances** : `renovate.json` commité, bot central de l'instance — il remonte `pyproject.toml` /

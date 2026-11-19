@@ -34,7 +34,7 @@ wheels = [
 ]
 
 [[package]]
-name = "airflow-dag-gantt"
+name = "airflow-dag-gantt-d2b"
 source = { editable = "." }
 dependencies = [
     { name = "apache-airflow" },

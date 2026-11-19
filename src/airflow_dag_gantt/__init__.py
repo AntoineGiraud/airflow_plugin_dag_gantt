@@ -10,8 +10,9 @@ from importlib.metadata import PackageNotFoundError, version
 
 # La version n'est plus déclarée ici : elle vient du tag git (hatch-vcs) et se **lit** dans les
 # métadonnées installées. La constante `__version__` reste pour le log de `on_load`.
+# Le nom lu est le nom **publié** (suffixe `-d2b`), pas celui du module.
 try:
-    __version__ = version("airflow-dag-gantt")
+    __version__ = version("airflow-dag-gantt-d2b")
 except PackageNotFoundError:  # checkout nu, paquet non installé
     __version__ = "0.0.0+unknown"
 

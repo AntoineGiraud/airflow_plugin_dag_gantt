@@ -288,3 +288,12 @@ hook local sur `0.17.x`, ou faire porter le lint gating **uniquement** par `.pre
    Renovate attendue sur ce composant.
 7. Premiers tags **sans `v`** à partir de `0.7.4` ; les `v0.7.x` historiques restent lisibles par
    hatch-vcs (préfixe `v` toléré) — à garder en tête le jour où l'on publierait depuis une shallow clone.
+
+### 8.4 Point 3 clos côté nom : la distribution prend le suffixe `-d2b`
+
+Exécuté dans `plans/20261119_03` : le **nom publié** devient `airflow-dag-gantt-d2b` (le wheel
+`airflow_dag_gantt_d2b-*.whl`), ce qui ferme la collision avec le paquet homonyme de PyPI public servi
+par `pythonproxy`, donc la dependency confusion. Le nom d'import (`airflow_dag_gantt`), l'entry point
+(`dag_gantt`) et l'URL montée (`/dag-gantt-plugin`) **ne bougent pas** : `check_plugins.py` de l'image,
+le menu Airflow et le contrat front ↔ Python sont inchangés. Reste ouvert sur ce point : la **cible**
+de l'index (registre du projet vs Artifactory) et ses gardes → `plans/20261119_04`.

@@ -20,7 +20,7 @@ COPY dist/ /tmp/plugin-dist/
 # seulement) → pip retomberait sur un --user : on installe en root, comme les
 # étapes ONBUILD de l'image (packages.txt / requirements.txt).
 USER root
-RUN pip install --no-cache-dir /tmp/plugin-dist/airflow_dag_gantt-*.whl \
+RUN pip install --no-cache-dir /tmp/plugin-dist/airflow_dag_gantt_d2b-*.whl \
     && rm -rf /tmp/plugin-dist \
     && python -c "from importlib.metadata import entry_points as e;\
 names={p.name for p in e().select(group='airflow.plugins')};\
