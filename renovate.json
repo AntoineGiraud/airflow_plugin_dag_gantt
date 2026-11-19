@@ -1,0 +1,84 @@
+// Configuration Renovate — les commentaires sont autorises : Renovate lit ce fichier en
+// JSON5 (https://docs.renovatebot.com/configuration-options/). Le parser strict du CI
+// (json.load) n'est pas la reference ici.
+//
+// Modele : `02_core/airflow-docker-image/renovate.json` (même instance, même bot central
+// `orange-cosa/recommandations/renovate-config`) — pas de composant TBC renovate ici : le bot
+// est active au niveau du groupe, un fichier commité suffit.
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    // Le manager `pre-commit` est DESACTIVE par defaut chez Renovate (désaccord assumé avec
+    // `pre-commit autoupdate`) : sans ce pragma, aucun MR ne remonterait les `rev:` epingles.
+    ":enablePreCommit"
+  ],
+
+  // Regle semgrep interne `renovate-missing-minimum-release-age` : ne proposer une mise a jour
+  // qu'apres un delai suivant la publication (une version fraichement publiee peut etre
+  // malveillante ou instable).
+  "minimumReleaseAge": "7 days",
+
+  // Les verrous (uv.lock, js/bun.lock) se rafraichissent sans attendre un bump de dependance.
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+
+  // Les `include: component:` de .gitlab-ci.yml sont ecrits `$CI_SERVER_FQDN/...`. Le manager
+  // `gitlabci` construit `https://<premier segment>` de cette chaine : sans alias il irait
+  // chercher les tags sur un hote nomme litteralement `$CI_SERVER_FQDN`. L'alias doit etre un
+  // hote NU (sans scheme) — avec `https://...` dans la valeur, le regex du manager coupe le
+  // host apres `https:` et la lookup echoue.
+  "registryAliases": {
+    "$CI_SERVER_FQDN": "gitlab.tech.orange"
+  },
+
+  "pre-commit": {
+    "enabled": true,
+    // Les `rev:` qui comptent en CI vivent dans .pre-commit-ci.yaml (le job `pre-commit` du
+    // template l'a designe) ; .pre-commit-config.yaml n'a que des hooks `repo: local`, donc
+    // rien d'y remonter. `managerFilePatterns` est le nom courant ; sur un bot plus ancien,
+    // le meme pattern s'ecrit `fileMatch`.
+    "managerFilePatterns": [
+      "/\\.pre-commit-config\\.yaml$/",
+      "/\\.pre-commit-ci\\.yaml$/"
+    ]
+  },
+
+  // Le bot ouvre des MR, il n'en fusionne aucune (arbitre le 20261119) : `main` est protegee et
+  // un pipeline vert ne prouve pas le comportement (regles adaptatives TBC : hors MR, les jobs
+  // de test passent manual + allow_failure).
+  "automerge": false,
+
+  "packageRules": [
+    {
+      // Dependances Python du pyproject.toml : on remonte la borne basse, on ne largit pas
+      // les ranges sans qu'on le demande.
+      "matchManagers": ["uv"],
+      "rangeStrategy": "bump"
+    },
+    {
+      // Resolution Python via le proxy du registre interne (même cible que le CI).
+      "matchDatasources": ["pypi"],
+      "registryUrls": ["https://repos.tech.orange/artifactory/api/pypi/pythonproxy/simple/"],
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      // js/ : `bun` est le manager de `js/bun.lock` ; Renovate exclut `package.json` du manager
+      // `npm` tant qu'aucun `package-lock.json` n'existe. PAS de `registryUrls` npm ici : aucun
+      // proxy npm interne n'a ete trouve sur l'instance. Si aucune MR JS n'apparait jamais,
+      // c'est ici qu'il faut ajouter le registre connu du bot.
+      "matchManagers": ["bun", "npm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "dependencies JS (minor + patch)"
+    },
+    {
+      // Majeure d'un composant TBC = a relire, les `inputs:` du template peuvent changer de nom
+      // ou de defaut (ex. `manager-version` est obligatoire avec bun, voir .gitlab-ci.yml).
+      "matchManagers": ["gitlabci"],
+      "matchUpdateTypes": ["major"],
+      "minimumReleaseAge": "30 days"
+    }
+  ]
+}
