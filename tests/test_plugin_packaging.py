@@ -1,11 +1,14 @@
 """Tests de packaging du paquet `airflow-dag-gantt`.
 
-À lancer dans un environnement **où le paquet est installé** — la **wheel**, pas un editable :
-`pip install -e .` **échoue** sans `DAG_GANTT_JS_DIR` (le hook de build s'applique aussi à
-l'editable), et installer la wheel est de toute façon ce que consomme le déploiement :
+Conventions d'exécution :
 
-    ./build.sh && uv venv /tmp/v && uv pip install -p /tmp/v dist/*.whl pytest httpx
-    /tmp/v/bin/pytest -q tests
+* installer la **wheel** est le chemin qui prouve le plus de choses (c'est ce que consomme le
+  déploiement) : `./build.sh && uv venv /tmp/v && uv pip install -p /tmp/v dist/*.whl pytest httpx
+  && /tmp/v/bin/pytest -q tests`
+* un editable (`uv sync`, donc les jobs CI qui appellent `install_requirements`) **réussit**
+  désormais sans `DAG_GANTT_JS_DIR` : le hook de build y pose un **stub** (voir
+  `hatch_build.py`). Les tests qui dépendent du bundle vrai se **skipent** alors, et c'est le
+  job GitLab `wheel-contract` qui prouve l'embarquement réel dans l'artefact publié.
 
     # ou, sans venv local, dans l'image Astro du projet (tag `<projet>_<hash>/airflow:latest`,
     # voir `docker images`) ; `astro dev` monte `tests/` mais pas `js/` → 2 tests skipés :
@@ -18,7 +21,7 @@ from __future__ import annotations
 import re
 import sys
 import tomllib
-from importlib.metadata import entry_points
+from importlib.metadata import PackageNotFoundError, entry_points, version
 from pathlib import Path
 
 import pytest
@@ -27,6 +30,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 JS_SRC_DIR = REPO_ROOT / "js" / "src"
 API_SOURCE = REPO_ROOT / "src" / "airflow_dag_gantt" / "api.py"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
+
+# Marqueur écrit par le stub de `hatch_build.py` (installable éditable sans bundle).
+STUB_MARKER = "stub posé par hatch_build.py"
 
 EXPECTED_NAME = "dag_gantt"
 EXPECTED_URL_PREFIX = "/dag-gantt-plugin"
@@ -76,6 +82,9 @@ def test_bundle_is_shipped_inside_the_package():
     bundle = Path(airflow_dag_gantt.__file__).parent / "static" / "dag-gantt-widget.js"
     assert bundle.is_file(), f"missing {bundle} (build the wheel with ./build.sh)"
     content = bundle.read_text(encoding="utf-8")
+    if STUB_MARKER in content:
+        # Installable éditable sans bundle : `wheel-contract` (CI) prouve l'embarquement réel.
+        pytest.skip("static/ tient un stub (uv sync sans bundle), pas le bundle vrai")
     assert len(content) > 1024, "suspiciously small bundle"
     assert "globalThis" in content, "bundle must register itself on globalThis"
 
@@ -179,22 +188,34 @@ def test_package_root_imports_no_airflow():
     """`airflow_dag_gantt/__init__.py` n'importe pas airflow → build/diagnostic possibles."""
     source = (REPO_ROOT / "src" / "airflow_dag_gantt" / "__init__.py").read_text("utf-8")
     assert "from airflow" not in source and "import airflow" not in source
-    assert sys.version_info >= (3, 12)
+    assert sys.version_info >= (3, 13), "plancher du paquet : requires-python >=3.13"
 
 
-def test_version_is_consistent_between_pyproject_and_package():
-    """`[project].version` == `airflow_dag_gantt.__version__`.
+def test_pyproject_declares_no_static_version():
+    """`[project]` ne porte **pas** de `version` : elle vient du tag git (hatch-vcs).
 
-    La version vit en **deux** endroits (déclaration du paquet **et** log de `on_load`, donc la
-    trace de diagnostic des pods). Sans ce garde-fou, un bump oublié dans l'un des deux fait
-    sortir une release dont le wheel dit `0.2.0` pendant que les logs disent `0.1.0` — et le tag
-    git, lui, est vérifié en CI contre `pyproject.toml` seulement.
+    Un retour du champ statique casse tout le build (`Metadata field 'version' cannot be both
+    statically defined and listed in project.dynamic`) : `uv lock`, `uv build`, `py-package`.
+    Le test doit donc parler **avant** la CI, en français.
+    """
+    project = tomllib.loads(PYPROJECT.read_text("utf-8"))["project"]
+    assert "version" not in project, (
+        "retirer `version` de `[project]` : la version vient du tag ([tool.hatch.version])"
+    )
+    assert "version" in project.get("dynamic", []), "`dynamic` doit déclarer `version`"
+
+
+def test_version_matches_the_installed_distribution():
+    """`__version__` == la version de la distribution installée.
+
+    `__version__` se lit dans les métadonnées (`importlib.metadata`) : le test n'a de sens que
+    comme garde-fou contre un retour d'une constante écrite à la main, qui divergerait du tag
+    dès la release suivante (le log de `on_load` et le wheel raconteraient deux histoires).
     """
     import airflow_dag_gantt
 
-    # `tomllib` plutôt qu'une regex : la borne basse est 3.12, et `[tool.hatch.build]` contient
-    # d'autres clés `version` — lire le TOML évite d'aller chercher la mauvaise table.
-    declared = tomllib.loads(PYPROJECT.read_text("utf-8"))["project"]["version"]
-    assert declared == airflow_dag_gantt.__version__, (
-        f"pyproject.toml says {declared!r}, package says {airflow_dag_gantt.__version__!r}"
-    )
+    try:
+        installed = version("airflow-dag-gantt")
+    except PackageNotFoundError:
+        pytest.skip("paquet non installé : rien à comparer à __version__")
+    assert airflow_dag_gantt.__version__ == installed

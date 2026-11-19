@@ -1,0 +1,127 @@
+include:
+  # Gitleaks template
+  - component: "$CI_SERVER_FQDN/to-be-continuous/gitleaks/gitlab-ci-gitleaks@2.7"
+
+  # Node template : fabrique LE bundle que la wheel embarque (`bun run build` → js/dist,
+  # copié par hatch_build.py). Le job `node-build` court `bun run test` puis `bun run build`
+  # et publie `js/dist` en artefact ; `py-package` le consomme via `needs` (plus bas).
+  - component: "$CI_SERVER_FQDN/to-be-continuous/node/gitlab-ci-node@5.4.2"
+    inputs:
+      manager: bun
+      # Obligatoire : le défaut interne `TBC_DEFAULT_NODE_BUN_VERSION` est vide et le
+      # template fait `npm install -g bun@<vide>` → job rouge. Épinglé sur le bun du poste
+      # (1.4.4) parce que `js/bun.lock` est écrit par ce bun ; un bump de majeure peut
+      # réécrire le format du verrou.
+      manager-version: "1.4.4"
+      project-dir: js
+      build-dir: dist
+      build-args: run build
+      # Défaut du template = `run test -- --coverage` : le `--coverage` atterrit sur la
+      # dernière commande de notre script `test` (chaîne de `bun ./test/*.test.mjs`).
+      test-args: run test
+      # `bun outdated --long` (défaut du template) : ce flag n'existe pas dans bun → exit 1
+      # vérifié avec bun 1.4.4. `bun outdated` seul sort 0 même avec des paquets périmés.
+      outdated-disabled: true
+      # `@cyclonedx/cyclonedx-npm` (le job SBOM du template) exige un package-lock.json ;
+      # nous n'avons que `js/bun.lock`. Les dépendances JS restent couvertes par node-audit
+      # et par le SBOM Python remonté au Dependency-Track.
+      sbom-disabled: true
+      # js/package.json n'a pas de script `lint` (react-doctor est un hook prek local) et
+      # le front n'est pas typé.
+      lint-enabled: false
+      typecheck-enabled: false
+
+  # Python template
+  - component: "$CI_SERVER_FQDN/to-be-continuous/python/gitlab-ci-python@9.4"
+    inputs:
+      # Sans cette déclaration, le template AUTO-détecte `requirements.txt` (celui du
+      # Dockerfile Astro, volontairement commentaire-only) et choisit le build system
+      # `reqfile` : rien n'installe le paquet, et `py-pytest` ne voit plus `airflow_dag_gantt`.
+      build-system: uv
+      # Job `py-pytest` (stage build) : uv sync --frozen + pytest, rapports JUnit
+      # (reports/TEST-*.xml) et cobertura (reports/py-coverage.cobertura.xml),
+      # badge de coverage. `py-compile` est automatiquement retiré du pipeline
+      # quand un framework de tests est activé (règles adaptatives du template).
+      pytest-enabled: true
+      # Job `py-ty` : `ty check` gating + rapport codequality. Passé par le template
+      # (et non par un hook pre-commit) : l'image du job pre-commit est une
+      # python:3-alpine et le wheel musl de ty n'est pas garanti.
+      ty-enabled: true
+      # `ruff check` est gating de son côté : hook épinglé dans .pre-commit-ci.yaml
+      # (l'input `ruff-enabled` ferait un `pip install ruff` non épinglé).
+
+  # pre-commit
+  - component: $CI_SERVER_FQDN/to-be-continuous/pre-commit/gitlab-ci-pre-commit@1.4.0
+    inputs:
+      pre-commit-file: .pre-commit-ci.yaml
+
+  #Dependency Track
+  - component: $CI_SERVER_FQDN/to-be-continuous/dependency-track/gitlab-ci-dependency-track@2.0.1
+  - component: $CI_SERVER_FQDN/to-be-continuous/custom/orange-extras/gitlab-ci-dependency-track-dtsi@2.0.2
+
+  # Semantic Release
+  - component: $CI_SERVER_FQDN/to-be-continuous/semantic-release/gitlab-ci-semrel@4.0.1
+    inputs:
+      changelog-enabled: false
+      auto-release-enabled: true
+
+variables:
+  PYTHON_PACKAGE_ENABLED: true
+  PYTHON_RELEASE_ENABLED: false # semantic release est là pour ça
+  PYTHON_PUBLISH_ENABLED: true
+  PYTHON_IMAGE: "python:3.14"
+  GIT_USERNAME: "gitlab-ci-token"
+  GIT_PASSWORD: "${GITLAB_TOKEN}"
+  # Clone complet : `py-package` lit la version dans les tags (hatch-vcs) et semantic-release
+  # remonte au dernier tag publié. Un `GIT_DEPTH` peu profond (« unable to detect version ») ne
+  # se verrait qu'au premier pipeline ; le dépôt fait ~14 Mo, le coût est négligeable.
+  GIT_DEPTH: "0"
+
+# `node-build` est au MÊME stage (`build`) que `py-package` : sans `needs`, les deux partent
+# en parallèle et `hatch_build.py` lève « JS dist not found ». L'artéfact `js/dist` arrive
+# avec le `needs`, `DAG_GANTT_JS_DIR` dit au hook où le prendre.
+py-package:
+  needs:
+    - job: node-build
+      artifacts: true
+  variables:
+    DAG_GANTT_JS_DIR: js/dist
+
+# Contrat de la wheel : ce que le Dockerfile consommateur va installer. C'est la seule
+# vérification que le bundle est PHYSIQUEMENT dans l'artefact publié (un `py-package` vert
+# ne prouve que le build, pas l'embarquement de `static/`).
+wheel-contract:
+  stage: test
+  image: python:3.14
+  needs:
+    - job: py-package
+      artifacts: true
+  script:
+    - |
+      set -euo pipefail
+      WHEEL=$(ls dist/*.whl)
+      python - "$WHEEL" <<'PY'
+      import sys, zipfile
+      wheel = sys.argv[1]
+      names = set(zipfile.ZipFile(wheel).namelist())
+      bundle = [n for n in names if n.endswith("static/dag-gantt-widget.js")]
+      assert bundle, names
+      # Le stub de `hatch_build.py` (installable éditable sans bundle) porte le MEME nom de
+      # fichier : sans contrôle de contenu, un wheel bourré du stub passerait ici.
+      content = zipfile.ZipFile(wheel).read(bundle[0]).decode("utf-8")
+      assert len(content) > 1024, f"bundle de {len(content)} octets dans {bundle[0]}"
+      assert "globalThis" in content, "le bundle doit se déclarer sur globalThis"
+      assert any("dist-info/licenses/LICENSE" in n for n in names), names
+      assert wheel.endswith("-py3-none-any.whl"), wheel
+      print(f"{wheel}: bundle embarqué ({len(content)} octets), LICENSE embarquée, tag universel")
+      PY
+  rules:
+    - !reference [.test-policy, rules]
+
+# Ce que la CI GitHub (`.github/workflows/ci.yml`, retirée au profit de GitLab) faisait en
+# plus et qui n'est pas encore reporté ici :
+# TODO: reporter la matrice de résolution `uv pip compile` en 3.12/3.13/3.14 — prouve la
+#       promesse « supports 3.12 → 3.14 » au niveau des métadonnées, ~10 s par version.
+# TODO: initialiser une métadatabase (`airflow db migrate`, AIRFLOW_HOME du dépôt) avant
+#       `py-pytest` — sinon `test_api_runs_contract` se SKIP et le contrat d'API n'est
+#       jamais exécuté en CI (2,2 s mesurées sur sqlite).

@@ -20,3 +20,12 @@ dist/
 js/node_modules/
 js/dist/
 src/airflow_dag_gantt/static/
+
+# Caches et rapports produits par la CI GitLab (templates TBC) : le template node écrit
+# BUN_INSTALL_CACHE_DIR dans `js/.bun`, les templates node/python déposent leurs rapports
+# JUnit/cobertura/SAST dans `reports/` (et `js/reports/`).
+js/.bun/
+js/.npm/
+js/.yarn/
+js/reports/
+reports/

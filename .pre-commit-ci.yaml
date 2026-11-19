@@ -1,0 +1,27 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      # - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-json
+        exclude: |
+          (?x)^(
+            .devcontainer/devcontainer.json
+            |renovate.json
+          )$
+        # renovate.json est du **JSON5** (Renovate le lit avec un parser tolérant les commentaires) :
+        # `check-json`, lui, fait un `json.load` strict et rougirait sur les `//`.
+      - id: check-merge-conflict
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.5
+    hooks:
+      # Le lint est volontairement ici (et pas seulement dans .pre-commit-config.yaml) :
+      # sans lui, `ruff check` n'est gating nulle part en CI. Le `rev` épinglé évite la
+      # dérive de version qu'introduirait `ruff-enabled: true` (le template fait un
+      # `pip install ruff` non épinglé).
+      - id: ruff-check
+      - id: ruff-format

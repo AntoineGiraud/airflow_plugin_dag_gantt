@@ -60,8 +60,8 @@ commandes suffisent, `astro dev start` et `astro dev stop` ; **tout le reste est
 
 **Ce qui tourne vraiment** : runtime `3.3-12` = Airflow **3.3.2+astro.3** sur **Python 3.14** — le
 `-12` est le *patch du runtime Astro*, pas la version de Python. Python visé par le paquet :
-**3.12 → 3.14** (le runtime 3.3 les supporte tous les trois, 3.14 par défaut). La wheel est
-`py3-none-any` : **une seule** wheel pour les trois versions, aucun build par interpréteur.
+**3.13 → 3.14** (les deux versions du runtime 3.3, 3.14 par défaut). La wheel est
+`py3-none-any` : **une seule** wheel pour les deux versions, aucun build par interpréteur.
 
 **Héritage** 🎄 — ce dépôt s'appelait `airflow-advent-calendar` : il part de l'[airflow-advent-calendar][tamara]
 de **Tamara Fingerlin** ([son article][tamara-article]), 24 DAGs qui ouvrent 24 fenêtres de décembre
@@ -203,13 +203,14 @@ un webpack-dev-server du poste dupliquerait une **seconde** instance de React da
 ### 3.3 Où vit quoi
 
 ```text
-pyproject.toml                    métadonnées du paquet + entry point airflow.plugins (py 3.12 → 3.14)
+pyproject.toml                    métadonnées du paquet + entry point airflow.plugins (py 3.13 → 3.14, version lue du tag)
 LICENSE                           MIT — embarquée dans le wheel (`license-files` du pyproject)
 hatch_build.py                    hook : câble js/dist → src/airflow_dag_gantt/static
 build.sh                          purge dist/ + bun run build + uv build --wheel → dist/*.whl
 dev.sh                            la loop courte, ci-dessus
 Dockerfile                        runtime Astro + pip install de la wheel LOCALE (valide l'entry point)
-.github/workflows/ci.yml          lint py + santé React + résolution 3.12/3.13/3.14 + build & tests (py 3.14)
+.gitlab-ci.yml                    composants TBC : node/bun (bundle) + python/uv (wheel) + wheel-contract
+renovate.json                     remonte py/uv, js (bun), les `rev:` de .pre-commit-ci.yaml et les composants
 src/airflow_dag_gantt/{plugin,api}.py   DagGanttPlugin (entry point) + app FastAPI/SQLAlchemy
 src/airflow_dag_gantt/static/     le bundle, copié au build (gitignoré)
 js/                               sources React (webpack + bun, externals globalThis)
@@ -227,7 +228,7 @@ js/                               sources React (webpack + bun, externals global
   src/DagGanttWidget.jsx          le **conteneur** : état de la vue, `useMemo` de dérivation,
                                    assemblage (l'état vit là, les composants reçoivent des props)
 dags/gantt_demo.py                3 DAGs de démo (success / failed / running, tags)
-tests/test_plugin_packaging.py    entry point, URLs, bundle, contrat d'API, cohérence de version
+tests/test_plugin_packaging.py    entry point, URLs, bundle, contrat d'API, version lue du tag
 plans/                            plans d'architecture (dont les choix de distribution §5)
 ```
 
@@ -274,12 +275,12 @@ oubliée (écran figé sur des données périmées, **sans erreur en console**),
 recalcule à chaque rendu, une fonction qui sait trop de choses à la fois. Lancé depuis `js/` :
 
 ```bash
-bunx react-doctor@0.9.22 --verbose  # 0.9.22 (la version du hook et de la CI) : 29 fichiers, ~40 ms de scan
+bunx react-doctor@0.9.22 --verbose  # 0.9.22 : la version du hook (seul endroit où elle est écrite) ; 29 fichiers, ~40 ms
 ```
 
 Ce qu'il reste à savoir quand il grogne : `why src/Fichier.jsx:42` explique **pourquoi** la règle a
 tiré à cet endroit précis, et `rules explain <règle>` renvoie la recette de correction canonique.
-La sévérité qui rougit est écrite dans le hook et dans la CI (§3.5) : les fautes de type « Bugs »
+La sévérité qui rougit est écrite **dans le hook seul** (§3.5) : les fautes de type « Bugs »
 bloquent, les avertissements restent des avis tant qu'il en reste un.
 
 ### 3.5 `prek` : les mêmes contrôles qu'en CI, avant le commit et avant le push
@@ -290,11 +291,11 @@ simples équivalents :
 
 | Hook | Commande | Étage |
 | --- | --- | --- |
-| `ruff-check`, `ruff-format` | `uvx ruff@0.16.1 check .` puis `format --check .` (job `lint` de la CI) | commit |
-| `js-tests` | `bun run --cwd js test` — tests purs de `js/src/lib/` (agrégation, temps/fenêtre, tags/groupes, dérivations) | commit, si `js/` change |
+| `ruff-check`, `ruff-format` | `uvx ruff@0.16.1 check .` puis `format --check .` (aussi gating en CI via les `rev:` de `.pre-commit-ci.yaml`) | commit |
+| `js-tests` | `bun run --cwd js test` — tests purs de `js/src/lib/` (agrégation, temps/fenêtre, tags/groupes, dérivations) — relancés par `node-build` | commit, si `js/` change |
 | `js-tests-dom` | `bun run --cwd js test:dom` — le composant monté sur 1127 runs dans un DOM | idem |
-| `js-react-doctor` | `bunx -y react-doctor@0.9.22 --staged --no-score --no-supply-chain` — santé React de l'index seulement (job `react-doctor` de la CI) | idem |
-| `js-lockfile` | `bun install --cwd js --frozen-lockfile` — `bun.lock` cohérent avec `package.json` | idem |
+| `js-react-doctor` | `bunx -y react-doctor@0.9.22 --staged --no-score --no-supply-chain` — santé React de l'index seulement (**seul hook sans équivalent en CI**, §3.5) | idem |
+| `js-lockfile` | `bun install --cwd js --frozen-lockfile` — `bun.lock` cohérent avec `package.json` (refait par `node-build`) | idem |
 | `js-bundle` | `bun run --cwd js build` — le bundle réellement livré | idem |
 | `wheel-build` | `./build.sh` — bundle **puis** wheel | `pre-push` + `manual` |
 
@@ -319,16 +320,16 @@ Deux choix valent l'explication :
   scanne que l'index (**0,4 s une fois le paquet en cache bun**, 3 s la première fois d'une journée)
   et **sort en 0 quand aucun fichier JS n'est indexé** — un commit de markdown ne le paie pas.
   `bunx` est choisi plutôt que `npx` parce que bun est déjà l'outil du dépôt (§3.1, `./build.sh`,
-  tous les hooks JS) et que le job CI lance la même commande ; `npx` mesurait 1,5 s à chaud et
+  tous les hooks JS) ; `npx` mesurait 1,5 s à chaud et
   13 s à froid sur le même projet. Si l'aller-retour au registre devient agaçant, la sortie propre
   est de passer `react-doctor` en `devDependency` de `js/` (`bunx react-doctor --staged`, version
   verrouillée par `bun.lock`, hors ligne). Le hook est
-  bloquant sur les **erreurs** seulement (`--blocking error`), exactement comme le job CI — les
+  bloquant sur les **erreurs** seulement (`--blocking error`) — les
   avertissements s'affichent sans empêcher le commit, et on durcira en `warning` le jour où le front
   n'aura plus rien à signaler.
 
 La CI garde la main : les hooks accélèrent la boucle locale, ils ne **prouvent** rien — seule la wheel
-construite en CI est installée (§4.2).
+construite en CI (`py-package`) et ouverte par `wheel-contract` a vocation à être publiée (§4.2).
 
 ---
 
@@ -424,20 +425,25 @@ besoin d'aucun egress.
 
 Ce dépôt est la maison d'un plugin, **pas d'une plateforme**. Hors POC, et assumé :
 
-- **publication** (Release GitHub, TestPyPI, PyPI, Nexus) : le seul consommateur du plugin est la
-  propre image du projet, via `COPY dist/`. Un canal de distribution et ses gardes (attestations
-  SLSA, immutability, Trusted Publishing, environment à revue humaine) ne payent leur loyer que
-  quand **quelqu'un d'autre** installe l'artefact. La chaîne a été conçue, chiffrée en coûts et en
+- **publication vers un index partagé** : la CI GitLab **publie** (composant semantic-release : tag
+  sans `v` → wheel → registre PyPI **du projet** GitLab), mais le seul consommateur du plugin reste la
+  propre image du projet, via `COPY dist/`. Ce qui reste hors POC : la cible **Artifactory** (le nom
+  `airflow-dag-gantt` est déjà pris sur PyPI public et servi par `pythonproxy`, donc un canal partagé
+  suppose un `pypi-local` dédié et un autre nom) et ses gardes (attestations SLSA, immutability,
+  Trusted Publishing, environment à revue humaine). La chaîne a été conçue, chiffrée en coûts et en
   risques, puis écartée : **recette complète en annexe A** de
-  `plans/20261109_03_python-313-314-et-release-github.md` (tag → wheel → Release épinglée par
-  `#sha256=` → attestations), y compris le fait qu'il **faudrait un autre nom** pour un index public.
-- **Dependabot / osv-scanner** : les 5 actions de la CI sont épinglées par SHA, donc à remonter à la
-  main (5 min, 4 fois par an). Le vrai risque de ce dépôt reste **npm/bun** — ce que produit webpack
-  s'exécute dans l'UI Airflow — et il est tenu par `js/bun.lock` versionné + `--frozen-lockfile` en CI.
-- **matrice multi-Python d'exécution** : la CI prouve la **résolution** des métadonnées en
-  3.12/3.13/3.14 et **l'exécution** en 3.14 (la version du runtime). Tester la borne basse
-  (`airflow 3.1` × Python 3.12) demanderait les `constraints-*` d'Airflow, donc trois environnements
-  complets.
+  `plans/20261109_03_python-313-314-et-release-github.md` (tag → wheel → artefact épinglé par
+  `#sha256=` → attestations).
+- **Dépendances** : `renovate.json` commité, bot central de l'instance — il remonte `pyproject.toml` /
+  `uv.lock`, `js/package.json` + `js/bun.lock`, les `rev:` de `.pre-commit-ci.yaml` et les composants
+  TBC de `.gitlab-ci.yml` (via `registryAliases`, sans automerge). Reste à la main : les versions
+  écrites dans un `entry:` de hook (`uvx ruff@…`, `bunx react-doctor@…`). Le vrai risque de ce dépôt
+  reste **npm/bun** — ce que produit webpack s'exécute dans l'UI Airflow — et il est tenu par
+  `js/bun.lock` versionné + `--frozen-lockfile` en CI + `node-audit`.
+- **matrice multi-Python d'exécution** : la CI n'exécute qu'en **3.14** (`PYTHON_IMAGE`, la version du
+  runtime). La matrice de **résolution** des métadonnées que faisait l'ex-CI GitHub n'est pas encore
+  reportée (un `TODO:` le dit dans `.gitlab-ci.yml`). Tester la borne basse (`airflow 3.2` ×
+  Python 3.13) demanderait les `constraints-*` d'Airflow, donc deux environnements complets.
 
 Pistes produit : durcir l'API (`GetUserDep`), fenêtre glissante multi-jours, surcouche « criticité »
 par tag, panneaux `dashboard`, validation sur le Helm Chart officiel [apache/airflow][helm-airflow]

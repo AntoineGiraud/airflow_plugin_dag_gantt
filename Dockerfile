@@ -10,8 +10,9 @@ FROM astrocrpublic.azurecr.io/runtime:3.3-12
 #
 # MODE LOCAL, unique mode retenu : la wheel vient du disque, donc zéro egress (le build marche
 # hors-ligne, `./dev.sh full` inclus) et la garantie d'intégrité vient de ce que VOUS avez buildé.
-# Publier l'artefact (Release GitHub épinglée par sha256, index interne, PyPI sous un autre nom)
-# est délibérément hors POC : le savoir est capitalisé dans
+# La CI GitLab publie bien la wheel (`py-publish`, registre PyPI **du projet**) — mais l'image ne
+# la consomme pas : passer par un index (Artifactory, PyPI sous un autre nom) avec attestation
+# d'intégrité reste hors POC, le savoir est capitalisé dans
 # `plans/20261109_03_python-313-314-et-release-github.md` et le README §5.
 COPY dist/ /tmp/plugin-dist/
 

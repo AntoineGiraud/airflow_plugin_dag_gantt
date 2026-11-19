@@ -4,9 +4,12 @@
 #   prek run --all-files          # valider tout le dépôt sans committer
 #   prek run --hook-stage manual  # + ./build.sh (la wheel complète, ~15 s)
 #
-# Règle de ce fichier : **relancer les MÊMES commandes que la CI**
-# (`.github/workflows/ci.yml`), pas des équivalents. Un hook qui n'existe pas en CI
-# dérive ; une commande CI absente du local surprend au moment du push.
+# Règle de ce fichier : **relancer les MÊMES commandes que la CI** (`.gitlab-ci.yml`),
+# pas des équivalents. Un hook qui n'existe pas en CI dérive ; une commande CI absente
+# du local surprend au moment du push. Renovate (`renovate.json`) remonte les `rev:` de
+# `.pre-commit-ci.yaml` et les composants de `.gitlab-ci.yml` — PAS les versions portées
+# par un `entry:` (`uvx ruff@0.16.1`, `bunx react-doctor@0.9.22`) : celles-là restent à la
+# main, et un écart avec `.pre-commit-ci.yaml` est une dérive, pas un choix.
 #
 # `repo: local` + `language: system` partout : bun et uv/uvx sont déjà exigés par
 # `./build.sh` et `./dev.sh`, et le but est de valider CE dépôt avec SES outils. Ouvrir
@@ -26,7 +29,7 @@ repos:
     hooks:
       # --- Python : strictement les deux commandes du job `lint` de la CI ---
       - id: ruff-check
-        name: ruff check (même version qu'en CI)
+        name: ruff check (version du hook — le gating CI est dans .pre-commit-ci.yaml)
         entry: uvx ruff@0.16.1 check .
         language: system
         always_run: true
@@ -56,9 +59,9 @@ repos:
         # ~1 s mesurée : c'est le hook qui monte le vrai composant sur 1127 runs. Le garder
         # au commit coûte moins cher qu'une régression de rendu découverte à la main.
 
-      # --- Santé React : le même scan qu'en CI (job `react-doctor`), sur l'index seulement ---
+      # --- Santé React : relecture du code comme un relecteur, sur l'index seul (hook local) ---
       - id: js-react-doctor
-        name: react-doctor — santé React (mêmes règles qu'en CI)
+        name: react-doctor — santé React (hook local, aucun équivalent en CI)
         # Version **épinglée** comme `ruff@0.16.1` : sinon le hook change de règles tout seul
         # entre deux commits, et un `git commit` devient une loterie réseau.
         # - `--staged` : ne scanne que ce qui est dans l'index, et sort en 0 quand aucun fichier

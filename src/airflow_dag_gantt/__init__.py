@@ -6,7 +6,14 @@ de packaging : aucun import d'`airflow` ici.
 
 from __future__ import annotations
 
-__version__ = "0.7.3"
+from importlib.metadata import PackageNotFoundError, version
+
+# La version n'est plus déclarée ici : elle vient du tag git (hatch-vcs) et se **lit** dans les
+# métadonnées installées. La constante `__version__` reste pour le log de `on_load`.
+try:
+    __version__ = version("airflow-dag-gantt")
+except PackageNotFoundError:  # checkout nu, paquet non installé
+    __version__ = "0.0.0+unknown"
 
 # Un seul nom partout (plugin.py ↔ api.py ↔ js/src/DagGanttWidget.jsx).
 # Les décorateurs FastAPI sont évalués à l'import : pas de valeur lue dans
